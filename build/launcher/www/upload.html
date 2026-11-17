@@ -57,6 +57,9 @@
   }
   .toast.show { opacity: 1; }
   .empty { color: #7f8fa3; padding: 26px 0; text-align: center; }
+  .types { display: flex; gap: 8px; margin: 0 0 16px; }
+  .types button { flex: 0 0 auto; padding: 8px 16px; border-radius: 999px; }
+  .types button.on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
 </style>
 </head>
 <body>
@@ -64,18 +67,23 @@
   <h1>电视壁纸 · 远程导入</h1>
   <div class="sub">同一局域网下打开本页即可上传 / 切换 / 删除壁纸。上传后需要手动「设为当前」才会换画面。</div>
 
+  <div class="types">
+    <button type="button" id="tabImage" class="on">静态壁纸（图片）</button>
+    <button type="button" id="tabVideo">动态壁纸（视频）</button>
+  </div>
+
   <div class="card">
     <div class="drop" id="drop" tabindex="0">
-      点击选择图片，或把文件拖到这里<br>
-      <b>支持多张 JPG / PNG / WebP</b>
-      <small>图片会直接存进电视本机，并在电视上参与 4K 静态壁纸管线</small>
+      <span id="dropTitle">点击选择图片，或把文件拖到这里</span><br>
+      <b id="dropFormats">支持多张 JPG / PNG / WebP</b>
+      <small id="dropHint">图片会直接存进电视本机，并在电视上参与 4K 静态壁纸管线</small>
     </div>
     <input type="file" id="file" accept="image/*" multiple hidden>
     <div id="progress"></div>
   </div>
 
   <div class="head">
-    <h2>已有壁纸</h2>
+    <h2 id="listTitle">已有静态壁纸</h2>
     <span id="summary">加载中…</span>
   </div>
   <div class="grid" id="grid"></div>
@@ -93,6 +101,38 @@
   var prog = document.getElementById('progress');
   var toastEl = document.getElementById('toast');
   var toastTimer = null;
+  var tabImage = document.getElementById('tabImage');
+  var tabVideo = document.getElementById('tabVideo');
+  var dropTitle = document.getElementById('dropTitle');
+  var dropFormats = document.getElementById('dropFormats');
+  var dropHint = document.getElementById('dropHint');
+  var listTitle = document.getElementById('listTitle');
+  var curType = 'image';
+  var lastData = { items: [] };
+
+  function isVideoName(name) {
+    return /\.(mp4|mkv|webm|mov|m4v|ts)$/i.test(name || '');
+  }
+
+  function typeLabel(type) {
+    return type === 'video' ? '动态壁纸' : '静态壁纸';
+  }
+
+  function setType(type) {
+    curType = type;
+    var video = type === 'video';
+    tabImage.className = video ? '' : 'on';
+    tabVideo.className = video ? 'on' : '';
+    input.accept = video ? 'video/mp4,video/x-matroska,video/webm,video/quicktime,.mp4,.mkv,.webm,.mov,.m4v' : 'image/*';
+    dropTitle.textContent = video ? '点击选择视频，或把文件拖到这里'
+      : '点击选择图片，或把文件拖到这里';
+    dropFormats.textContent = video ? '支持 MP4 / MKV / WebM / MOV，单个文件最大 600 MB'
+      : '支持多张 JPG / PNG / WebP';
+    dropHint.textContent = video ? '视频会存进电视本机，选中后循环播放作为动态壁纸'
+      : '图片会直接存进电视本机，并在电视上参与 4K 静态壁纸管线';
+    listTitle.textContent = '已有' + typeLabel(type);
+    render(lastData);
+  }
 
   function toast(msg) {
     toastEl.textContent = msg;
@@ -114,9 +154,15 @@
   }
 
   function render(data) {
-    var items = (data && data.items) || [];
-    summary.textContent = items.length + ' 张' +
-      (data && data.current ? ' · 当前：' + data.current : '');
+    lastData = data || { items: [] };
+    var all = lastData.items || [];
+    var items = all.filter(function (it) {
+      return (it.type === 'video' ? 'video' : 'image') === curType;
+    });
+    var current = curType === 'video' ? lastData.currentVideo : lastData.current;
+    summary.textContent = items.length + (curType === 'video' ? ' 个视频' : ' 张') +
+      (current ? ' · 当前：' + current : '');
+    empty.textContent = curType === 'video' ? '还没有动态壁纸' : '还没有静态壁纸';
     empty.style.display = items.length ? 'none' : 'block';
     grid.innerHTML = '';
     items.forEach(function (it) {
@@ -126,7 +172,8 @@
       var img = document.createElement('img');
       img.className = 'thumb';
       img.loading = 'lazy';
-      img.src = '/api/thumb?name=' + encodeURIComponent(it.name);
+      var tq = '&type=' + curType;
+      img.src = '/api/thumb?name=' + encodeURIComponent(it.name) + tq;
       card.appendChild(img);
 
       var meta = document.createElement('div');
@@ -145,7 +192,7 @@
 
       var size = document.createElement('div');
       size.className = 'size';
-      size.textContent = fmtSize(it.size);
+      size.textContent = fmtSize(it.size) + (curType === 'video' ? ' · 循环播放' : '');
       meta.appendChild(size);
 
       var ops = document.createElement('div');
@@ -160,7 +207,7 @@
       }
       applyBtn.onclick = function () {
         applyBtn.disabled = true;
-        api('/api/apply?name=' + encodeURIComponent(it.name), { method: 'POST' })
+        api('/api/apply?name=' + encodeURIComponent(it.name) + tq, { method: 'POST' })
           .then(function (r) {
             if (r.ok) { toast('已切换为 ' + it.name); refresh(); }
             else { toast('切换失败'); applyBtn.disabled = false; }
@@ -172,9 +219,9 @@
       delBtn.className = 'danger';
       delBtn.textContent = '删除';
       delBtn.onclick = function () {
-        if (!confirm('删除壁纸「' + it.name + '」？')) return;
+        if (!confirm('删除' + typeLabel(curType) + '「' + it.name + '」？')) return;
         delBtn.disabled = true;
-        api('/api/delete?name=' + encodeURIComponent(it.name), { method: 'POST' })
+        api('/api/delete?name=' + encodeURIComponent(it.name) + tq, { method: 'POST' })
           .then(function (r) {
             if (r.ok) { toast('已删除'); refresh(); }
             else { toast('删除失败（可能是当前壁纸）'); delBtn.disabled = false; }
@@ -210,7 +257,8 @@
       prog.style.display = 'block';
 
       var xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/upload?name=' + encodeURIComponent(file.name));
+      xhr.open('POST', '/api/upload?name=' + encodeURIComponent(file.name)
+        + '&type=' + curType);
       xhr.upload.onprogress = function (e) {
         if (!e.lengthComputable) return;
         var pct = Math.round(e.loaded / e.total * 100);
@@ -240,8 +288,14 @@
   }
 
   function uploadFiles(files) {
-    var list = Array.prototype.filter.call(files, function (f) { return /^image\//.test(f.type); });
-    if (!list.length) { toast('请选择图片文件'); return; }
+    var video = curType === 'video';
+    var list = Array.prototype.filter.call(files, function (f) {
+      if (video) {
+        return /^video\//.test(f.type) || isVideoName(f.name);
+      }
+      return /^image\//.test(f.type);
+    });
+    if (!list.length) { toast(video ? '请选择视频文件' : '请选择图片文件'); return; }
     var okCount = 0;
     var chain = Promise.resolve();
     list.forEach(function (f, i) {
@@ -274,6 +328,9 @@
     if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
   });
 
+  tabImage.addEventListener('click', function () { setType('image'); });
+  tabVideo.addEventListener('click', function () { setType('video'); });
+  setType('image');
   refresh();
   setInterval(refresh, 10000);
 })();

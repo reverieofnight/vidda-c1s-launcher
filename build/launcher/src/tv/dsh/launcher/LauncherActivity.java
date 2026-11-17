@@ -129,9 +129,25 @@ public class LauncherActivity extends Activity {
     private static final String BG_DIR = "backgrounds";
     private static final long BACKGROUND_INTERVAL_MS = 30 * 1000L;
     private static final long BG_FADE_MS = 1200L;
+    private static final String KEY_SLIDESHOW = "slideshow_enabled";
+    private static final String KEY_SLIDESHOW_SEC = "slideshow_interval_sec";
+    private static final String KEY_SLIDESHOW_FADE = "slideshow_fade";
+    private static final String KEY_VIDEO_MUTED = "video_muted";
+    private static final int[] SLIDESHOW_STEPS = {10, 30, 60, 300, 600, 1800};
     /** UI 壁纸相对视频 plane 的 1px 对齐微调 */
     private static final float WALLPAPER_NUDGE_X = 1f;
     private static final float WALLPAPER_NUDGE_Y = 1f;
+
+    /** 动态壁纸：外部视频目录 + 当前类型记忆 */
+    private static final String VIDEO_BG_DIR = "backgrounds_video";
+    private static final String KEY_VIDEO_BACKGROUND = "current_video_background";
+    private static final String KEY_WALLPAPER_TYPE = "wallpaper_type";
+    private static final String TYPE_IMAGE = "image";
+    private static final String TYPE_VIDEO = "video";
+    private static final int MANAGER_IMAGES = 0;
+    private static final int MANAGER_VIDEOS = 1;
+    /** 单个视频壁纸允许的最大体积 */
+    private static final long VIDEO_MAX_BYTES = 600L * 1024L * 1024L;
 
     /** 4K 静态壁纸：外部图片目录 + 设备端编码缓存目录 */
     private static final String FOUR_K_BG_DIR = "backgrounds_4k";
@@ -262,6 +278,17 @@ public class LauncherActivity extends Activity {
     private int fourKEncodeToken;
     private int fourKPlayToken;
     private String current4KName;
+    private final List<BackgroundItem> videoItems = new ArrayList<>();
+    private int videoIndex = -1;
+    private String currentVideoName;
+    private boolean videoWallpaperMode;
+    private boolean slideshowEnabled = true;
+    private int slideshowIntervalSec = 30;
+    private boolean slideshowFade = true;
+    private boolean videoMuted = true;
+    private MediaPlayer videoPlayerRef;
+    private int videoPlayToken;
+    private int managerType = MANAGER_IMAGES;
     private boolean cacheCleanupStarted;
     private boolean fourKUiAnimationDone;
     private boolean fourKVideoReady;
@@ -282,6 +309,9 @@ public class LauncherActivity extends Activity {
     private TextView managerStats;
     private TextView managerEmpty;
     private TextView managerImportButton;
+    private TextView managerCacheButton;
+    private TextView managerTabImage;
+    private TextView managerTabVideo;
     private WallpaperAdapter managerAdapter;
     private boolean managerOpen;
     /** 缩略图缓存：key = 文件名|stamp */
@@ -367,6 +397,7 @@ public class LauncherActivity extends Activity {
 
         reloadBackgrounds();
         reload4KBackgrounds();
+        reloadVideoBackgrounds();
         cleanup4KCacheAsync();
 
         View scrim = new View(this);
@@ -641,7 +672,8 @@ public class LauncherActivity extends Activity {
         refreshClock();
         refreshDock();
         focusFirstDockItem();
-        refresh4KStaticMode();
+        loadPlaybackSettings();
+        restoreWallpaperMode();
         if (getIntent() != null && getIntent().getBooleanExtra("wallpaper_manager", false)) {
             handler.postDelayed(new Runnable() {
                 @Override
@@ -653,6 +685,264 @@ public class LauncherActivity extends Activity {
                 }
             }, 1200);
         }
+    }
+
+    // ---------- 动态壁纸（视频文件，循环播放） ----------
+
+    private File videoBgDir() {
+        File base = getExternalFilesDir(null) != null
+                ? getExternalFilesDir(null) : getFilesDir();
+        return new File(base, VIDEO_BG_DIR);
+    }
+
+    private static boolean isVideoName(String name) {
+        if (name == null) {
+            return false;
+        }
+        String lower = name.toLowerCase(Locale.US);
+        return lower.endsWith(".mp4") || lower.endsWith(".mkv")
+                || lower.endsWith(".webm") || lower.endsWith(".mov")
+                || lower.endsWith(".m4v") || lower.endsWith(".ts");
+    }
+
+    private List<BackgroundItem> scanVideoBackgrounds() {
+        List<BackgroundItem> items = new ArrayList<>();
+        File dir = videoBgDir();
+        if (!dir.exists()) {
+            dir.mkdirs();
+            return items;
+        }
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return items;
+        }
+        for (File file : files) {
+            if (!file.isFile() || !isVideoName(file.getName())) {
+                continue;
+            }
+            items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
+                    file.lastModified() ^ file.length()));
+        }
+        Collections.sort(items, new Comparator<BackgroundItem>() {
+            @Override
+            public int compare(BackgroundItem a, BackgroundItem b) {
+                return a.name.compareToIgnoreCase(b.name);
+            }
+        });
+        return items;
+    }
+
+    private void reloadVideoBackgrounds() {
+        List<BackgroundItem> found = scanVideoBackgrounds();
+        if (found.size() == videoItems.size()) {
+            boolean same = true;
+            for (int i = 0; i < found.size(); i++) {
+                BackgroundItem a = videoItems.get(i);
+                BackgroundItem b = found.get(i);
+                if (!a.name.equals(b.name) || a.stamp != b.stamp) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) {
+                return;
+            }
+        }
+        String keep = currentVideoName;
+        if (keep == null) {
+            keep = getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .getString(KEY_VIDEO_BACKGROUND, null);
+        }
+        videoItems.clear();
+        videoItems.addAll(found);
+        int index = 0;
+        if (keep != null) {
+            for (int i = 0; i < videoItems.size(); i++) {
+                if (keep.equals(videoItems.get(i).name)) {
+                    index = i;
+                    break;
+                }
+            }
+        }
+        videoIndex = videoItems.isEmpty() ? -1 : index;
+        currentVideoName = videoItems.isEmpty() ? null : videoItems.get(videoIndex).name;
+        Log.i(TAG, "video background items: " + videoItems.size());
+    }
+
+    /** 启动时按上次记住的类型恢复壁纸：视频优先，否则走 4K 静态 / 1080p */
+    private void restoreWallpaperMode() {
+        String type = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(KEY_WALLPAPER_TYPE, TYPE_IMAGE);
+        if (TYPE_VIDEO.equals(type) && !videoItems.isEmpty()) {
+            videoWallpaperMode = true;
+            if (videoIndex < 0 || videoIndex >= videoItems.size()) {
+                videoIndex = 0;
+            }
+            currentVideoName = videoItems.get(videoIndex).name;
+            Log.i(TAG, "restore video wallpaper: " + currentVideoName);
+            refreshVideoWallpaperMode();
+            return;
+        }
+        videoWallpaperMode = false;
+        refresh4KStaticMode();
+    }
+
+    private void refreshVideoWallpaperMode() {
+        if (wallpaperVideo == null) {
+            return;
+        }
+        if (!videoWallpaperMode || videoItems.isEmpty()) {
+            stopVideoWallpaper();
+            return;
+        }
+        if (videoIndex < 0 || videoIndex >= videoItems.size()) {
+            videoIndex = 0;
+        }
+        BackgroundItem item = videoItems.get(videoIndex);
+        currentVideoName = item.name;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_VIDEO_BACKGROUND, item.name)
+                .putString(KEY_WALLPAPER_TYPE, TYPE_VIDEO).apply();
+        playVideoWallpaper(new File(item.filePath));
+    }
+
+    private void playVideoWallpaper(final File file) {
+        if (wallpaperVideo == null || file == null || !file.isFile()) {
+            return;
+        }
+        final int token = ++videoPlayToken;
+        handler.removeCallbacks(bgTick);
+        fourKStaticMode = false;
+        fourKEncoding = false;
+        fourKEncodeToken++;
+        stop4KStatic();
+        wallpaperVideo.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+            @Override
+            public void onPrepared(MediaPlayer mp) {
+                if (token != videoPlayToken || !videoWallpaperMode) {
+                    return;
+                }
+                mp.setLooping(true);
+                videoPlayerRef = mp;
+                float volume = videoMuted ? 0f : 1f;
+                mp.setVolume(volume, volume);
+                bgFront.setVisibility(View.GONE);
+                bgBack.setVisibility(View.GONE);
+                if (wallpaperTransitionLayer != null) {
+                    wallpaperTransitionLayer.setVisibility(View.GONE);
+                }
+                wallpaperVideo.setVisibility(View.VISIBLE);
+                wallpaperVideo.start();
+                Log.i(TAG, "video wallpaper prepared " + mp.getVideoWidth()
+                        + "x" + mp.getVideoHeight() + " " + file.getName());
+            }
+        });
+        wallpaperVideo.setOnInfoListener(new MediaPlayer.OnInfoListener() {
+            @Override
+            public boolean onInfo(MediaPlayer mp, int what, int extra) {
+                if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                    Log.i(TAG, "video wallpaper rendering start");
+                    handler.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (token == videoPlayToken && videoWallpaperMode) {
+                                fourKVideoReady = true;
+                                maybeHide4KUiCover();
+                            }
+                        }
+                    }, FOUR_K_FRAME_SETTLE_MS);
+                }
+                return false;
+            }
+        });
+        wallpaperVideo.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+            @Override
+            public boolean onError(MediaPlayer mp, int what, int extra) {
+                if (token != videoPlayToken) {
+                    return true;
+                }
+                Log.w(TAG, "video wallpaper failed: " + what + "/" + extra);
+                videoWallpaperMode = false;
+                stopVideoWallpaper();
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
+                refresh4KStaticMode();
+                return true;
+            }
+        });
+        wallpaperVideo.setVisibility(View.VISIBLE);
+        wallpaperVideo.setVideoPath(file.getAbsolutePath());
+        Log.i(TAG, "video wallpaper play " + file.getName());
+    }
+
+    private void stopVideoWallpaper() {
+        videoPlayToken++;
+        if (wallpaperVideo != null) {
+            wallpaperVideo.setOnPreparedListener(null);
+            wallpaperVideo.setOnInfoListener(null);
+            wallpaperVideo.setOnErrorListener(null);
+            if (wallpaperVideo.isPlaying()) {
+                wallpaperVideo.stopPlayback();
+            } else {
+                wallpaperVideo.stopPlayback();
+            }
+            wallpaperVideo.setVisibility(View.GONE);
+        }
+    }
+
+    private void applyVideoByName(String name) {
+        int index = -1;
+        for (int i = 0; i < videoItems.size(); i++) {
+            if (videoItems.get(i).name.equals(name)) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0) {
+            return;
+        }
+        videoIndex = index;
+        currentVideoName = name;
+        videoWallpaperMode = true;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_VIDEO_BACKGROUND, name)
+                .putString(KEY_WALLPAPER_TYPE, TYPE_VIDEO).apply();
+        refreshVideoWallpaperMode();
+        refreshManager();
+        if (managerOpen && managerGrid != null) {
+            managerGrid.setSelection(index);
+            managerGrid.requestFocus();
+        }
+        Log.i(TAG, "video wallpaper applied: " + name);
+    }
+
+    private void switchVideoBy(int direction) {
+        if (videoItems.isEmpty()) {
+            return;
+        }
+        if (videoIndex < 0) {
+            videoIndex = 0;
+        }
+        int next = (videoIndex + direction + videoItems.size()) % videoItems.size();
+        videoIndex = next;
+        currentVideoName = videoItems.get(next).name;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_VIDEO_BACKGROUND, currentVideoName).apply();
+        playVideoWallpaper(new File(videoItems.get(next).filePath));
+        Log.i(TAG, "video wallpaper switch -> " + currentVideoName);
+    }
+
+    /** 放弃视频模式，回到静态壁纸（图片） */
+    private void leaveVideoWallpaperMode() {
+        if (!videoWallpaperMode) {
+            return;
+        }
+        videoWallpaperMode = false;
+        stopVideoWallpaper();
+        bgFront.setVisibility(View.VISIBLE);
+        bgBack.setVisibility(View.VISIBLE);
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
     }
 
     // ---------- 4K 静态壁纸（设备端 x264 单帧编码） ----------
@@ -797,6 +1087,9 @@ public class LauncherActivity extends Activity {
     }
 
     private void refresh4KStaticMode() {
+        if (videoWallpaperMode) {
+            return;
+        }
         if (wallpaperVideo == null) {
             return;
         }
@@ -878,6 +1171,7 @@ public class LauncherActivity extends Activity {
     }
 
     private void set4KStaticEnabled(boolean enabled) {
+        leaveVideoWallpaperMode();
         if (reveal4KVideo == enabled) {
             refresh4KStaticMode();
             return;
@@ -1310,60 +1604,151 @@ public class LauncherActivity extends Activity {
         return out.toByteArray();
     }
 
+    private void loadPlaybackSettings() {
+        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        slideshowEnabled = sp.getBoolean(KEY_SLIDESHOW, true);
+        slideshowIntervalSec = sp.getInt(KEY_SLIDESHOW_SEC, 30);
+        slideshowFade = sp.getBoolean(KEY_SLIDESHOW_FADE, true);
+        videoMuted = sp.getBoolean(KEY_VIDEO_MUTED, true);
+    }
+
+    private void savePlaybackSettings() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(KEY_SLIDESHOW, slideshowEnabled)
+                .putInt(KEY_SLIDESHOW_SEC, slideshowIntervalSec)
+                .putBoolean(KEY_SLIDESHOW_FADE, slideshowFade)
+                .putBoolean(KEY_VIDEO_MUTED, videoMuted)
+                .apply();
+    }
+
+    private String intervalLabel(int seconds) {
+        if (seconds < 60) {
+            return seconds + " 秒";
+        }
+        return (seconds / 60) + " 分钟";
+    }
+
+    private Switch makeSettingsSwitch(String label, boolean checked) {
+        Switch sw = new Switch(this);
+        sw.setText(label);
+        sw.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        sw.setChecked(checked);
+        sw.setPadding(0, dp(6), 0, dp(6));
+        return sw;
+    }
+
     private void showBackgroundSettings() {
+        loadPlaybackSettings();
+
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(24), dp(8), dp(24), dp(8));
+        box.setPadding(dp(30), dp(18), dp(30), dp(6));
 
-        if (fourKItems.isEmpty()) {
-            File dir = new File(getExternalFilesDir(null), FOUR_K_BG_DIR);
-            TextView info = new TextView(this);
-            info.setText("当前为 1080p 静态壁纸 / 轮播图模式。\n\n"
-                    + "可以直接用「管理壁纸」从 U 盘导入图片，\n"
-                    + "也可以把图片放到：\n" + dir.getAbsolutePath());
-            info.setTextSize(15);
-            info.setTextColor(0xFFD6DEE8);
-            info.setLineSpacing(dp(3), 1f);
-            box.addView(info);
-            new AlertDialog.Builder(this)
-                    .setTitle("背景设置")
-                    .setView(box)
-                    .setPositiveButton("完成", null)
-                    .setNeutralButton("管理壁纸", new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface dialog, int which) {
-                            openWallpaperManager();
-                        }
-                    })
-                    .show();
-            return;
-        }
-
-        Switch sw = new Switch(this);
-        sw.setText("4K 静态壁纸");
-        sw.setTextSize(18);
-        sw.setChecked(reveal4KVideo);
-        sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+        Switch sw4k = makeSettingsSwitch("4K 静态壁纸", reveal4KVideo);
+        sw4k.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
             @Override
             public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
                 set4KStaticEnabled(isChecked);
             }
         });
-        box.addView(sw);
+        box.addView(sw4k);
+
+        Switch swSlide = makeSettingsSwitch("幻灯片播放", slideshowEnabled);
+        swSlide.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                slideshowEnabled = isChecked;
+                savePlaybackSettings();
+                resetBgTimer();
+                Log.i(TAG, "slideshow = " + isChecked);
+            }
+        });
+        box.addView(swSlide);
+
+        final TextView interval = new TextView(this);
+        interval.setText("切换间隔：" + intervalLabel(slideshowIntervalSec) + "（左右键调整）");
+        interval.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        interval.setTextColor(Color.WHITE);
+        interval.setFocusable(true);
+        interval.setFocusableInTouchMode(true);
+        interval.setPadding(dp(14), dp(12), dp(14), dp(12));
+        interval.setBackgroundResource(R.drawable.tile_bg);
+        interval.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                v.setBackgroundResource(hasFocus
+                        ? R.drawable.item_focus : R.drawable.tile_bg);
+            }
+        });
+        View.OnKeyListener stepKey = new View.OnKeyListener() {
+            @Override
+            public boolean onKey(View v, int keyCode, KeyEvent event) {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) {
+                    return false;
+                }
+                int delta = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1
+                        : keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 0;
+                if (delta == 0) {
+                    return false;
+                }
+                stepSlideshowInterval(delta);
+                interval.setText("切换间隔：" + intervalLabel(slideshowIntervalSec) + "（左右键调整）");
+                return true;
+            }
+        };
+        interval.setOnKeyListener(stepKey);
+        interval.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                stepSlideshowInterval(1);
+                interval.setText("切换间隔：" + intervalLabel(slideshowIntervalSec) + "（左右键调整）");
+            }
+        });
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ilp.topMargin = dp(6);
+        box.addView(interval, ilp);
+
+        Switch swFade = makeSettingsSwitch("切换特效（淡入淡出）", slideshowFade);
+        swFade.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                slideshowFade = isChecked;
+                savePlaybackSettings();
+                Log.i(TAG, "slideshow fade = " + isChecked);
+            }
+        });
+        box.addView(swFade);
+
+        Switch swMute = makeSettingsSwitch("动态壁纸静音", videoMuted);
+        swMute.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                videoMuted = isChecked;
+                savePlaybackSettings();
+                if (videoPlayerRef != null) {
+                    float volume = isChecked ? 0f : 1f;
+                    try {
+                        videoPlayerRef.setVolume(volume, volume);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        });
+        box.addView(swMute);
 
         TextView desc = new TextView(this);
-        desc.setText("开启：使用投影仪本地 x264 把 4K 图片编码成很短的视频，"
-                + "由 4K 视频层显示并暂停。首次生成约 1 秒，之后使用缓存。\n"
-                + "关闭：回到 1080p 静态壁纸 / 轮播图。\n"
-                + "4K 模式下切换壁纸不做转场，直接硬切。\n\n"
+        desc.setText("幻灯片按上面设定的间隔自动换壁纸；4K 模式下切换一律硬切，"
+                + "「切换特效」只对 1080p 静态壁纸生效。\n"
+                + "动态壁纸播放时默认静音，关掉本项后使用电视当前音量。\n\n"
                 + "4K 图片目录：\n"
                 + new File(getExternalFilesDir(null), FOUR_K_BG_DIR).getAbsolutePath());
-        desc.setTextSize(14);
-        desc.setTextColor(0xFFD6DEE8);
-        desc.setLineSpacing(dp(3), 1f);
+        desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        desc.setTextColor(0xFF9FB0C2);
+        desc.setLineSpacing(dp(2), 1f);
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.topMargin = dp(10);
+        dlp.topMargin = dp(12);
         box.addView(desc, dlp);
 
         new AlertDialog.Builder(this)
@@ -1377,6 +1762,21 @@ public class LauncherActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    private void stepSlideshowInterval(int delta) {
+        int index = 0;
+        for (int i = 0; i < SLIDESHOW_STEPS.length; i++) {
+            if (SLIDESHOW_STEPS[i] == slideshowIntervalSec) {
+                index = i;
+                break;
+            }
+        }
+        index = (index + delta + SLIDESHOW_STEPS.length) % SLIDESHOW_STEPS.length;
+        slideshowIntervalSec = SLIDESHOW_STEPS[index];
+        savePlaybackSettings();
+        resetBgTimer();
+        Log.i(TAG, "slideshow interval = " + slideshowIntervalSec + "s");
     }
 
     private TextView makeWallpaperControl(String glyph, final int direction) {
@@ -1408,7 +1808,9 @@ public class LauncherActivity extends Activity {
     }
 
     private void switchWallpaperBy(int direction) {
-        if (fourKStaticEnabled()) {
+        if (videoWallpaperMode) {
+            switchVideoBy(direction);
+        } else if (fourKStaticEnabled()) {
             switch4KStatic(direction);
         } else {
             advanceBackground(direction);
@@ -1496,8 +1898,17 @@ public class LauncherActivity extends Activity {
         managerStats.setPadding(0, dp(6), 0, 0);
         column.addView(managerStats);
 
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.setPadding(0, dp(10), 0, 0);
+        managerTabImage = makeManagerTab("静态壁纸", MANAGER_IMAGES);
+        managerTabVideo = makeManagerTab("动态壁纸", MANAGER_VIDEOS);
+        tabs.addView(managerTabImage);
+        tabs.addView(managerTabVideo);
+        column.addView(tabs);
+
         managerEmpty = new TextView(this);
-        managerEmpty.setText("还没有壁纸\n点下面「导入壁纸」，从 U 盘或本地存储添加");
+        managerEmpty.setText("还没有图片壁纸\n点下面「导入图片」，从 U 盘或本地存储添加");
         managerEmpty.setTextColor(0xFF8FA0B3);
         managerEmpty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         managerEmpty.setGravity(Gravity.CENTER);
@@ -1554,16 +1965,23 @@ public class LauncherActivity extends Activity {
             }
         });
         actions.addView(managerImportButton);
-        actions.addView(makeManagerButton("清空缓存", new View.OnClickListener() {
+        managerCacheButton = makeManagerButton("清空缓存", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 confirmClearAllCache();
             }
-        }));
+        });
+        actions.addView(managerCacheButton);
         actions.addView(makeManagerButton("远程导入", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 openRemoteImport();
+            }
+        }));
+        actions.addView(makeManagerButton("播放设置", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showBackgroundSettings();
             }
         }));
         actions.addView(makeManagerButton("关闭", new View.OnClickListener() {
@@ -1619,6 +2037,7 @@ public class LauncherActivity extends Activity {
         managerOpen = true;
         reloadBackgrounds();
         reload4KBackgrounds();
+        reloadVideoBackgrounds();
         managerGrid.setAdapter(managerAdapter);
         managerModule.setVisibility(View.VISIBLE);
         if (desktopModule != null) {
@@ -1628,16 +2047,18 @@ public class LauncherActivity extends Activity {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
         refreshManager();
-        if (fourKItems.isEmpty()) {
+        if (activeManagerItems().isEmpty()) {
             if (managerImportButton != null) {
                 managerImportButton.requestFocus();
             }
         } else {
-            int selection = fourKIndex >= 0 ? fourKIndex : 0;
+            int selection = Math.max(activeManagerIndex(), 0);
             managerGrid.setSelection(selection);
+            snapManagerGridToRow();
             managerGrid.requestFocus();
         }
-        Log.i(TAG, "wallpaper manager opened, items=" + fourKItems.size());
+        Log.i(TAG, "wallpaper manager opened, images=" + fourKItems.size()
+                + " videos=" + videoItems.size());
     }
 
     private void closeWallpaperManager() {
@@ -2017,6 +2438,152 @@ public class LauncherActivity extends Activity {
         }
 
         @Override
+        public List<String> videoNames() {
+            List<String> names = callOnUi(new Callable<List<String>>() {
+                @Override
+                public List<String> call() {
+                    List<String> out = new ArrayList<>(videoItems.size());
+                    for (BackgroundItem item : videoItems) {
+                        out.add(item.name);
+                    }
+                    return out;
+                }
+            }, 3000);
+            return names == null ? new ArrayList<String>() : names;
+        }
+
+        @Override
+        public String currentVideo() {
+            return currentVideoName;
+        }
+
+        @Override
+        public File videoDir() {
+            return videoBgDir();
+        }
+
+        @Override
+        public synchronized String saveVideo(String fileName, InputStream in, long length)
+                throws IOException {
+            if (!isVideoName(fileName) || length <= 0 || length > VIDEO_MAX_BYTES) {
+                return null;
+            }
+            File dir = videoBgDir();
+            if (!dir.exists() && !dir.mkdirs()) {
+                return null;
+            }
+            String ext = ".mp4";
+            int dot = fileName.lastIndexOf('.');
+            if (dot > 0) {
+                ext = fileName.substring(dot).toLowerCase(Locale.US);
+            }
+            File temp = new File(dir, ".upload-" + System.currentTimeMillis() + ext);
+            long written = 0;
+            OutputStream out = null;
+            try {
+                out = new FileOutputStream(temp);
+                byte[] buffer = new byte[256 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                    written += read;
+                }
+                out.flush();
+            } finally {
+                if (out != null) {
+                    out.close();
+                }
+            }
+            if (written != length) {
+                temp.delete();
+                Log.w(TAG, "remote video incomplete: " + written + "/" + length);
+                return null;
+            }
+            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+            try {
+                retriever.setDataSource(temp.getAbsolutePath());
+                String duration = retriever.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_DURATION);
+                if (TextUtils.isEmpty(duration) || "0".equals(duration)) {
+                    temp.delete();
+                    Log.w(TAG, "remote video not playable: " + fileName);
+                    return null;
+                }
+            } catch (Throwable t) {
+                temp.delete();
+                Log.w(TAG, "remote video rejected: " + fileName, t);
+                return null;
+            } finally {
+                try {
+                    retriever.release();
+                } catch (Throwable ignored) {
+                }
+            }
+            String base = fileName;
+            if (dot > 0) {
+                base = fileName.substring(0, dot);
+            }
+            File dest = new File(dir, base + ext);
+            int suffix = 1;
+            while (dest.exists()) {
+                suffix++;
+                dest = new File(dir, base + "_" + suffix + ext);
+            }
+            if (!temp.renameTo(dest)) {
+                temp.delete();
+                return null;
+            }
+            final String saved = dest.getName();
+            Log.i(TAG, "remote video stored: " + saved + " (" + length + " bytes)");
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    reloadVideoBackgrounds();
+                    refreshManager();
+                    if (!remoteOpen) {
+                        Toast.makeText(LauncherActivity.this,
+                                "已收到动态壁纸 " + saved, Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+            return saved;
+        }
+
+        @Override
+        public boolean applyVideo(final String name) {
+            Boolean ok = callOnUi(new Callable<Boolean>() {
+                @Override
+                public Boolean call() {
+                    for (BackgroundItem item : videoItems) {
+                        if (item.name.equals(name)) {
+                            applyVideoByName(name);
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }, 8000);
+            return ok != null && ok;
+        }
+
+        @Override
+        public boolean deleteVideo(final String name) {
+            Boolean ok = callOnUi(new Callable<Boolean>() {
+                @Override
+                public Boolean call() {
+                    for (BackgroundItem item : videoItems) {
+                        if (item.name.equals(name)) {
+                            deleteVideoWallpaper(item);
+                            return !new File(item.filePath).exists();
+                        }
+                    }
+                    return false;
+                }
+            }, 5000);
+            return ok != null && ok;
+        }
+
+        @Override
         public void onRemoteEvent(final String message) {
             handler.post(new Runnable() {
                 @Override
@@ -2077,29 +2644,162 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    private List<BackgroundItem> activeManagerItems() {
+        return managerType == MANAGER_VIDEOS ? videoItems : fourKItems;
+    }
+
+    private String activeManagerCurrentName() {
+        return managerType == MANAGER_VIDEOS ? currentVideoName : current4KName;
+    }
+
+    private int activeManagerIndex() {
+        if (managerType == MANAGER_VIDEOS) {
+            return videoIndex;
+        }
+        return fourKIndex;
+    }
+
+    /** 让网格按整行对齐，避免顶部只露出上一行的几像素 */
+    private void snapManagerGridToRow() {
+        if (managerGrid == null) {
+            return;
+        }
+        managerGrid.post(new Runnable() {
+            @Override
+            public void run() {
+                if (managerGrid == null) {
+                    return;
+                }
+                View firstView = managerGrid.getChildAt(0);
+                if (firstView == null) {
+                    return;
+                }
+                int dy = firstView.getTop() - managerGrid.getPaddingTop();
+                if (dy != 0) {
+                    managerGrid.scrollListBy(dy);
+                }
+            }
+        });
+    }
+
+    private void setManagerType(int type) {
+        if (managerType == type) {
+            return;
+        }
+        managerType = type;
+        updateManagerTabs();
+        refreshManager();
+        if (managerOpen && managerGrid != null && !activeManagerItems().isEmpty()) {
+            int index = Math.max(activeManagerIndex(), 0);
+            managerGrid.setSelection(index);
+            snapManagerGridToRow();
+            managerGrid.requestFocus();
+        } else if (managerOpen && managerImportButton != null) {
+            managerImportButton.requestFocus();
+        }
+    }
+
+    private void updateManagerTabs() {
+        if (managerCacheButton != null) {
+            managerCacheButton.setVisibility(managerType == MANAGER_IMAGES
+                    ? View.VISIBLE : View.GONE);
+        }
+        if (managerTabImage != null) {
+            managerTabImage.setText("静态壁纸 " + fourKItems.size());
+            managerTabImage.setTextColor(managerType == MANAGER_IMAGES
+                    ? Color.WHITE : 0xFF8FA0B3);
+            managerTabImage.setBackgroundColor(managerType == MANAGER_IMAGES
+                    ? 0xFF1E2A38 : 0xFF141C27);
+        }
+        if (managerTabVideo != null) {
+            managerTabVideo.setText("动态壁纸 " + videoItems.size());
+            managerTabVideo.setTextColor(managerType == MANAGER_VIDEOS
+                    ? Color.WHITE : 0xFF8FA0B3);
+            managerTabVideo.setBackgroundColor(managerType == MANAGER_VIDEOS
+                    ? 0xFF1E2A38 : 0xFF141C27);
+        }
+        if (managerImportButton != null) {
+            managerImportButton.setText(managerType == MANAGER_VIDEOS ? "导入视频" : "导入图片");
+        }
+        if (managerEmpty != null) {
+            managerEmpty.setText(managerType == MANAGER_VIDEOS
+                    ? "还没有动态壁纸\n点下面「导入视频」，从 U 盘或本地存储添加"
+                    : "还没有图片壁纸\n点下面「导入图片」，从 U 盘或本地存储添加");
+        }
+    }
+
+    private TextView makeManagerTab(final String label, final int type) {
+        TextView tab = new TextView(this);
+        tab.setText(label);
+        tab.setTextColor(0xFF8FA0B3);
+        tab.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        tab.setGravity(Gravity.CENTER);
+        tab.setBackgroundColor(0xFF141C27);
+        tab.setFocusable(true);
+        tab.setFocusableInTouchMode(true);
+        tab.setPadding(dp(18), 0, dp(18), 0);
+        tab.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                if (hasFocus) {
+                    v.setBackgroundResource(R.drawable.item_focus);
+                } else {
+                    v.setBackgroundColor(managerType == type ? 0xFF1E2A38 : 0xFF141C27);
+                }
+            }
+        });
+        tab.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setManagerType(type);
+            }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
+        lp.rightMargin = dp(10);
+        tab.setLayoutParams(lp);
+        return tab;
+    }
+
     private void refreshManager() {
+        updateManagerTabs();
         if (managerAdapter != null) {
             managerAdapter.notifyDataSetChanged();
         }
         if (managerStats == null) {
             return;
         }
-        boolean empty = fourKItems.isEmpty();
+        List<BackgroundItem> items = activeManagerItems();
+        boolean empty = items.isEmpty();
         if (managerGrid != null) {
             managerGrid.setVisibility(empty ? View.GONE : View.VISIBLE);
         }
         if (managerEmpty != null) {
             managerEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
         }
-        // 删到没有壁纸时，焦点会随着网格一起消失，移到「导入壁纸」
+        // 删到没有壁纸时，焦点会随着网格一起消失，移到「导入」按钮
         if (empty && managerOpen && managerImportButton != null
                 && (managerGrid == null || isFocusIn(managerGrid))) {
             managerImportButton.requestFocus();
         }
-        long total = totalCacheSize();
-        String current = current4KName;
-        managerStats.setText(fourKItems.size() + " 张 · 4K 缓存 " + formatSize(total)
-                + (TextUtils.isEmpty(current) ? "" : " · 当前：" + current));
+        String current = activeManagerCurrentName();
+        if (managerType == MANAGER_VIDEOS) {
+            managerStats.setText(items.size() + " 个视频 · 合计 " + formatSize(totalVideoSize())
+                    + (TextUtils.isEmpty(current) ? "" : " · 当前：" + current));
+        } else {
+            long total = totalCacheSize();
+            managerStats.setText(items.size() + " 张 · 4K 缓存 " + formatSize(total)
+                    + (TextUtils.isEmpty(current) ? "" : " · 当前：" + current));
+        }
+    }
+
+    private long totalVideoSize() {
+        long total = 0;
+        for (BackgroundItem item : videoItems) {
+            File file = new File(item.filePath);
+            total += file.length();
+        }
+        return total;
     }
 
     private static String formatSize(long bytes) {
@@ -2112,12 +2812,12 @@ public class LauncherActivity extends Activity {
     private final class WallpaperAdapter extends BaseAdapter {
         @Override
         public int getCount() {
-            return fourKItems.size();
+            return activeManagerItems().size();
         }
 
         @Override
         public Object getItem(int position) {
-            return fourKItems.get(position);
+            return activeManagerItems().get(position);
         }
 
         @Override
@@ -2127,10 +2827,11 @@ public class LauncherActivity extends Activity {
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
-            if (position < 0 || position >= fourKItems.size()) {
+            List<BackgroundItem> items = activeManagerItems();
+            if (position < 0 || position >= items.size()) {
                 return new FrameLayout(LauncherActivity.this);
             }
-            BackgroundItem item = fourKItems.get(position);
+            BackgroundItem item = items.get(position);
             boolean selected = managerGrid != null && managerGrid.hasFocus()
                     && managerGrid.getSelectedItemPosition() == position;
 
@@ -2156,7 +2857,7 @@ public class LauncherActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(26), Gravity.BOTTOM);
             tile.addView(label, labelLp);
 
-            if (item.name.equals(current4KName)) {
+            if (item.name.equals(activeManagerCurrentName())) {
                 TextView badge = new TextView(LauncherActivity.this);
                 badge.setText("当前");
                 badge.setTextColor(Color.WHITE);
@@ -2212,6 +2913,9 @@ public class LauncherActivity extends Activity {
         if (path == null) {
             return null;
         }
+        if (isVideoName(item.name)) {
+            return decodeVideoThumbnail(path, targetW);
+        }
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -2234,29 +2938,67 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    private Bitmap decodeVideoThumbnail(String path, int targetW) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(path);
+            Bitmap frame = retriever.getFrameAtTime(1_000_000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null) {
+                frame = retriever.getFrameAtTime(0L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            }
+            if (frame == null) {
+                return null;
+            }
+            if (frame.getWidth() <= targetW * 2) {
+                return frame;
+            }
+            int height = Math.max(1, Math.round(frame.getHeight() * (targetW * 2f)
+                    / frame.getWidth()));
+            Bitmap scaled = Bitmap.createScaledBitmap(frame, targetW * 2, height, true);
+            if (scaled != frame) {
+                frame.recycle();
+            }
+            return scaled;
+        } catch (Throwable t) {
+            Log.w(TAG, "decode video thumbnail failed: " + path, t);
+            return null;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     private void showWallpaperActions(final int position) {
-        if (position < 0 || position >= fourKItems.size()) {
+        final List<BackgroundItem> items = activeManagerItems();
+        if (position < 0 || position >= items.size()) {
             return;
         }
-        final BackgroundItem item = fourKItems.get(position);
+        final BackgroundItem item = items.get(position);
+        final boolean video = managerType == MANAGER_VIDEOS;
         final List<String> labels = new ArrayList<>();
         final List<Integer> actions = new ArrayList<>();
 
-        boolean isCurrent = item.name.equals(current4KName);
+        boolean isCurrent = item.name.equals(activeManagerCurrentName());
         labels.add(isCurrent ? "当前壁纸（重新应用）" : "设为当前壁纸");
         actions.add(1);
-        if (position > 0) {
-            labels.add("向前移动");
-            actions.add(2);
+        if (!video) {
+            if (position > 0) {
+                labels.add("向前移动");
+                actions.add(2);
+            }
+            if (position < items.size() - 1) {
+                labels.add("向后移动");
+                actions.add(3);
+            }
+            long cacheSize = cacheSizeFor(item);
+            labels.add(cacheSize > 0 ? "清除此图缓存（" + formatSize(cacheSize) + "）" : "清除此图缓存");
+            actions.add(4);
         }
-        if (position < fourKItems.size() - 1) {
-            labels.add("向后移动");
-            actions.add(3);
-        }
-        long cacheSize = cacheSizeFor(item);
-        labels.add(cacheSize > 0 ? "清除此图缓存（" + formatSize(cacheSize) + "）" : "清除此图缓存");
-        actions.add(4);
-        labels.add("删除壁纸");
+        labels.add(video ? "删除视频" : "删除壁纸");
         actions.add(5);
 
         new AlertDialog.Builder(this)
@@ -2266,7 +3008,11 @@ public class LauncherActivity extends Activity {
                     public void onClick(DialogInterface dialog, int which) {
                         int action = actions.get(which);
                         if (action == 1) {
-                            applyWallpaperByName(item.name);
+                            if (video) {
+                                applyVideoByName(item.name);
+                            } else {
+                                applyWallpaperByName(item.name);
+                            }
                         } else if (action == 2) {
                             moveWallpaper(position, -1);
                         } else if (action == 3) {
@@ -2299,8 +3045,10 @@ public class LauncherActivity extends Activity {
         }
         current4KName = name;
         fourKIndex = index;
+        leaveVideoWallpaperMode();
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_4K_BACKGROUND, name).apply();
+                .putString(KEY_4K_BACKGROUND, name)
+                .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
         if (fourKStaticEnabled()) {
             fourKEncodeToken++;
             fourKEncoding = false;
@@ -2353,9 +3101,11 @@ public class LauncherActivity extends Activity {
     }
 
     private void confirmDeleteWallpaper(final BackgroundItem item) {
+        boolean video = isVideoName(item.name);
         new AlertDialog.Builder(this)
-                .setTitle("删除壁纸")
-                .setMessage("同时删除它的 4K 缓存，原始图片会被删除。\n\n" + item.name)
+                .setTitle(video ? "删除视频壁纸" : "删除壁纸")
+                .setMessage((video ? "视频文件会被删除。" : "同时删除它的 4K 缓存，原始图片会被删除。")
+                        + "\n\n" + item.name)
                 .setPositiveButton("删除", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
@@ -2367,6 +3117,10 @@ public class LauncherActivity extends Activity {
     }
 
     private void deleteWallpaper(BackgroundItem item) {
+        if (isVideoName(item.name)) {
+            deleteVideoWallpaper(item);
+            return;
+        }
         File file = new File(item.filePath);
         boolean deleted = file.delete();
         if (!deleted) {
@@ -2385,6 +3139,37 @@ public class LauncherActivity extends Activity {
         }
         Toast.makeText(this, "已删除 " + item.name, Toast.LENGTH_SHORT).show();
         Log.i(TAG, "wallpaper deleted: " + item.name);
+    }
+
+    private void deleteVideoWallpaper(BackgroundItem item) {
+        boolean wasCurrent = item.name.equals(currentVideoName);
+        File file = new File(item.filePath);
+        if (!file.delete()) {
+            Toast.makeText(this, "删除失败：" + item.name, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (wasCurrent) {
+            videoWallpaperMode = false;
+            stopVideoWallpaper();
+            bgFront.setVisibility(View.VISIBLE);
+            bgBack.setVisibility(View.VISIBLE);
+            currentVideoName = null;
+            videoIndex = -1;
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .remove(KEY_VIDEO_BACKGROUND)
+                    .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
+        }
+        reloadVideoBackgrounds();
+        if (!videoWallpaperMode) {
+            refresh4KStaticMode();
+        }
+        refreshManager();
+        if (managerOpen && managerGrid != null && !videoItems.isEmpty()) {
+            managerGrid.setSelection(Math.max(videoIndex, 0));
+            managerGrid.requestFocus();
+        }
+        Toast.makeText(this, "已删除 " + item.name, Toast.LENGTH_SHORT).show();
+        Log.i(TAG, "video wallpaper deleted: " + item.name);
     }
 
     private File fourKCacheDir() {
@@ -2577,6 +3362,7 @@ public class LauncherActivity extends Activity {
             Toast.makeText(this, "无法读取该目录", Toast.LENGTH_SHORT).show();
             return;
         }
+        final boolean wantVideo = managerType == MANAGER_VIDEOS;
         File[] children = dir.listFiles();
         List<File> dirs = new ArrayList<>();
         final List<File> images = new ArrayList<>();
@@ -2584,8 +3370,12 @@ public class LauncherActivity extends Activity {
             for (File child : children) {
                 if (child.isDirectory() && !child.getName().startsWith(".")) {
                     dirs.add(child);
-                } else if (child.isFile() && isImageName(child.getName())) {
-                    images.add(child);
+                } else if (child.isFile()) {
+                    boolean match = wantVideo
+                            ? isVideoName(child.getName()) : isImageName(child.getName());
+                    if (match) {
+                        images.add(child);
+                    }
                 }
             }
         }
@@ -2606,7 +3396,9 @@ public class LauncherActivity extends Activity {
             targets.add(parent);
         }
         if (!images.isEmpty()) {
-            labels.add("导入本目录全部图片（" + images.size() + " 张）");
+            labels.add(wantVideo
+                    ? "导入本目录全部视频（" + images.size() + " 个）"
+                    : "导入本目录全部图片（" + images.size() + " 张）");
             targets.add(null);
         }
         for (File child : dirs) {
@@ -2614,7 +3406,7 @@ public class LauncherActivity extends Activity {
             targets.add(child);
         }
         for (File image : images) {
-            labels.add("🖼 " + image.getName());
+            labels.add((wantVideo ? "🎬 " : "🖼 ") + image.getName());
             targets.add(image);
         }
         if (labels.isEmpty()) {
@@ -2630,14 +3422,22 @@ public class LauncherActivity extends Activity {
                         File target = targets.get(which);
                         if (target == null) {
                             if (labels.get(which).startsWith("导入本目录")) {
-                                importWallpapers(images);
+                                if (wantVideo) {
+                                    importVideos(images);
+                                } else {
+                                    importWallpapers(images);
+                                }
                             }
                         } else if (target.isDirectory()) {
                             showFileBrowser(target);
                         } else {
                             List<File> one = new ArrayList<>();
                             one.add(target);
-                            importWallpapers(one);
+                            if (wantVideo) {
+                                importVideos(one);
+                            } else {
+                                importWallpapers(one);
+                            }
                         }
                     }
                 })
@@ -2686,6 +3486,112 @@ public class LauncherActivity extends Activity {
                 });
             }
         }, "wallpaper-import").start();
+    }
+
+    private void importVideos(final List<File> files) {
+        if (files == null || files.isEmpty()) {
+            return;
+        }
+        Toast.makeText(this, "正在导入 " + files.size() + " 个视频…", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int ok = 0;
+                for (File file : files) {
+                    if (copyVideoIntoDevice(file) != null) {
+                        ok++;
+                    }
+                }
+                final int okCount = ok;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        reloadVideoBackgrounds();
+                        refreshManager();
+                        Toast.makeText(LauncherActivity.this,
+                                okCount > 0 ? ("已导入 " + okCount + " 个视频，点一下设为当前")
+                                        : "导入失败：不是可播放的视频或文件过大",
+                                Toast.LENGTH_LONG).show();
+                        Log.i(TAG, "videos imported: " + okCount);
+                    }
+                });
+            }
+        }, "video-import").start();
+    }
+
+    /** 校验并复制视频到 files/backgrounds_video，返回新文件名；失败返回 null */
+    private String copyVideoIntoDevice(File src) {
+        if (src == null || !src.isFile() || !isVideoName(src.getName())) {
+            return null;
+        }
+        if (src.length() <= 0 || src.length() > VIDEO_MAX_BYTES) {
+            return null;
+        }
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(src.getAbsolutePath());
+            String duration = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (TextUtils.isEmpty(duration) || "0".equals(duration)) {
+                return null;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "reject video (cannot read): " + src.getName(), t);
+            return null;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            File dir = videoBgDir();
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            String name = src.getName();
+            String base = name;
+            String ext = ".mp4";
+            int dot = name.lastIndexOf('.');
+            if (dot > 0) {
+                base = name.substring(0, dot);
+                ext = name.substring(dot);
+            }
+            File dest = new File(dir, base + ext);
+            int suffix = 1;
+            while (dest.exists()) {
+                suffix++;
+                dest = new File(dir, base + "_" + suffix + ext);
+            }
+            File tmp = new File(dir, ".upload-" + System.nanoTime() + ext);
+            InputStream in = new FileInputStream(src);
+            OutputStream out = new FileOutputStream(tmp);
+            try {
+                byte[] buffer = new byte[256 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                }
+                out.flush();
+            } finally {
+                try {
+                    in.close();
+                } catch (Throwable ignored) {
+                }
+                try {
+                    out.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (!tmp.renameTo(dest)) {
+                tmp.delete();
+                return null;
+            }
+            return dest.getName();
+        } catch (Throwable t) {
+            Log.w(TAG, "copy video failed: " + src.getName(), t);
+            return null;
+        }
     }
 
     /** 校验并复制到 files/backgrounds_4k，返回新文件名；失败返回 null */
@@ -2753,10 +3659,17 @@ public class LauncherActivity extends Activity {
     private final Runnable bgTick = new Runnable() {
         @Override
         public void run() {
-            if (!fourKStaticEnabled()) {
-                advanceBackground(1);
-                handler.postDelayed(this, BACKGROUND_INTERVAL_MS);
+            if (!slideshowEnabled || videoWallpaperMode) {
+                return;
             }
+            if (fourKStaticEnabled()) {
+                if (fourKItems.size() > 1) {
+                    switch4KStatic(1);
+                }
+            } else if (backgroundItems.size() > 1) {
+                advanceBackground(1);
+            }
+            handler.postDelayed(this, slideshowIntervalSec * 1000L);
         }
     };
 
@@ -2990,18 +3903,24 @@ public class LauncherActivity extends Activity {
         final ImageView incoming = bgBack;
         final ImageView outgoing = bgFront;
         incoming.setImageBitmap(bitmap);
-        incoming.setAlpha(0f);
-        incoming.animate().alpha(1f).setDuration(BG_FADE_MS)
-                .setInterpolator(BG_EASE).start();
-        outgoing.animate().alpha(0f).setDuration(BG_FADE_MS)
-                .setInterpolator(BG_EASE)
-                .withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        bgSwitching = false;
-                                }
-                })
-                .start();
+        if (slideshowFade) {
+            incoming.setAlpha(0f);
+            incoming.animate().alpha(1f).setDuration(BG_FADE_MS)
+                    .setInterpolator(BG_EASE).start();
+            outgoing.animate().alpha(0f).setDuration(BG_FADE_MS)
+                    .setInterpolator(BG_EASE)
+                    .withEndAction(new Runnable() {
+                        @Override
+                        public void run() {
+                            bgSwitching = false;
+                        }
+                    })
+                    .start();
+        } else {
+            incoming.setAlpha(1f);
+            outgoing.setAlpha(0f);
+            bgSwitching = false;
+        }
 
         bgFront = incoming;
         bgBack = outgoing;
@@ -3108,8 +4027,12 @@ public class LauncherActivity extends Activity {
 
     private void resetBgTimer() {
         handler.removeCallbacks(bgTick);
-        if (!fourKStaticEnabled() && backgroundItems.size() > 1) {
-            handler.postDelayed(bgTick, BACKGROUND_INTERVAL_MS);
+        if (!slideshowEnabled || videoWallpaperMode) {
+            return;
+        }
+        int count = fourKStaticEnabled() ? fourKItems.size() : backgroundItems.size();
+        if (count > 1) {
+            handler.postDelayed(bgTick, slideshowIntervalSec * 1000L);
         }
     }
 
@@ -3269,7 +4192,11 @@ public class LauncherActivity extends Activity {
             refreshDock();
         } else {
             reloadApps();
-            refresh4KStaticMode();
+            if (videoWallpaperMode) {
+                refreshVideoWallpaperMode();
+            } else {
+                refresh4KStaticMode();
+            }
         }
         // 底栏默认聚焦第一项，左右键用来选择应用
         if (managerOpen) {
@@ -3288,9 +4215,14 @@ public class LauncherActivity extends Activity {
         hideMenuImmediately();
         reloadBackgrounds();
         reload4KBackgrounds();
+        reloadVideoBackgrounds();
         reloadApps();
         focusFirstDockItem();
-        refresh4KStaticMode();
+        if (videoWallpaperMode) {
+            refreshVideoWallpaperMode();
+        } else {
+            refresh4KStaticMode();
+        }
         if (intent != null && intent.getBooleanExtra("wallpaper_manager", false)) {
             openWallpaperManager();
             if (intent.getBooleanExtra("remote_import", false)) {
@@ -3417,7 +4349,7 @@ public class LauncherActivity extends Activity {
 
     /** 4K 视频层真正露出来时菜单悬浮；否则（UI 壁纸/4K 关闭）沿用桌面下压 */
     private boolean shouldFloatMenu() {
-        return fourKStaticEnabled();
+        return videoWallpaperMode || fourKStaticEnabled();
     }
 
     private void openMenu() {

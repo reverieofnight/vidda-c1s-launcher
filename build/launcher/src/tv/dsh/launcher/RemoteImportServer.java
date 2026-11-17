@@ -2,6 +2,7 @@ package tv.dsh.launcher;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.MediaMetadataRetriever;
 import android.util.Log;
 
 import java.io.BufferedInputStream;
@@ -40,7 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class RemoteImportServer {
 
     private static final String TAG = "DSH_LAUNCHER";
-    private static final int MAX_UPLOAD_BYTES = 40 * 1024 * 1024;
+    private static final int MAX_UPLOAD_BYTES = 600 * 1024 * 1024;
     private static final int MAX_HEADER_BYTES = 16 * 1024;
     private static final int THUMB_W = 400;
     private static final int THUMB_CACHE_MAX = 48;
@@ -62,6 +63,22 @@ public class RemoteImportServer {
         boolean applyWallpaper(String name);
 
         boolean deleteWallpaper(String name);
+
+        /** 动态壁纸文件名列表 */
+        List<String> videoNames();
+
+        /** 当前动态壁纸，可能为 null */
+        String currentVideo();
+
+        /** backgrounds_video 目录 */
+        File videoDir();
+
+        /** 保存视频壁纸，返回最终文件名；失败返回 null */
+        String saveVideo(String fileName, InputStream in, long length) throws IOException;
+
+        boolean applyVideo(String name);
+
+        boolean deleteVideo(String name);
 
         void onRemoteEvent(String message);
     }
@@ -227,13 +244,14 @@ public class RemoteImportServer {
         } else if ("GET".equals(method) && "/api/list".equals(path)) {
             serveList(out);
         } else if ("GET".equals(method) && "/api/thumb".equals(path)) {
-            serveThumb(out, param(query, "name"));
+            serveThumb(out, param(query, "name"), isVideoType(param(query, "type")));
         } else if ("POST".equals(method) && "/api/upload".equals(path)) {
-            serveUpload(socket, rawIn, out, param(query, "name"), contentLength, chunked);
+            serveUpload(socket, rawIn, out, param(query, "name"),
+                    isVideoType(param(query, "type")), contentLength, chunked);
         } else if ("POST".equals(method) && "/api/apply".equals(path)) {
-            serveApply(out, param(query, "name"));
+            serveApply(out, param(query, "name"), isVideoType(param(query, "type")));
         } else if ("POST".equals(method) && "/api/delete".equals(path)) {
-            serveDelete(out, param(query, "name"));
+            serveDelete(out, param(query, "name"), isVideoType(param(query, "type")));
         } else {
             writeJson(out, 404, "{\"ok\":false,\"error\":\"not found\"}");
         }
@@ -298,10 +316,15 @@ public class RemoteImportServer {
 
     private void serveList(OutputStream out) throws IOException {
         List<String> names = host.wallpaperNames();
+        List<String> videos = host.videoNames();
         String current = host.currentWallpaper();
+        String currentVideo = host.currentVideo();
         File dir = host.wallpaperDir();
+        File vdir = host.videoDir();
         StringBuilder sb = new StringBuilder(1024);
-        sb.append("{\"ok\":true,\"current\":").append(jsonString(current)).append(",\"items\":[");
+        sb.append("{\"ok\":true,\"current\":").append(jsonString(current))
+                .append(",\"currentVideo\":").append(jsonString(currentVideo))
+                .append(",\"items\":[");
         boolean first = true;
         for (String name : names) {
             if (name == null) {
@@ -312,30 +335,51 @@ public class RemoteImportServer {
                 sb.append(',');
             }
             first = false;
-            sb.append("{\"name\":").append(jsonString(name))
-                    .append(",\"size\":").append(f.length())
-                    .append(",\"mtime\":").append(f.lastModified())
-                    .append(",\"current\":").append(name.equals(current))
-                    .append('}');
+            sb.append(itemJson(name, "image", f, name.equals(current)));
+        }
+        for (String name : videos) {
+            if (name == null) {
+                continue;
+            }
+            File f = new File(vdir, name);
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append(itemJson(name, "video", f, name.equals(currentVideo)));
         }
         sb.append("]}");
         writeResponse(out, 200, "application/json; charset=utf-8", sb.toString().getBytes("UTF-8"));
     }
 
-    private void serveThumb(OutputStream out, String name) throws IOException {
+    private static String itemJson(String name, String type, File f, boolean current) {
+        return "{\"name\":" + jsonString(name)
+                + ",\"type\":\"" + type + "\""
+                + ",\"size\":" + f.length()
+                + ",\"mtime\":" + f.lastModified()
+                + ",\"current\":" + current
+                + "}";
+    }
+
+    private static boolean isVideoType(String type) {
+        return "video".equals(type);
+    }
+
+    private void serveThumb(OutputStream out, String name, boolean video) throws IOException {
         if (!isSafeName(name)) {
             writeJson(out, 400, "{\"ok\":false,\"error\":\"bad name\"}");
             return;
         }
-        File file = new File(host.wallpaperDir(), name);
+        File file = new File(video ? host.videoDir() : host.wallpaperDir(), name);
         if (!file.isFile()) {
             writeJson(out, 404, "{\"ok\":false,\"error\":\"not found\"}");
             return;
         }
-        String key = name + "@" + file.lastModified() + "#" + file.length();
+        String key = (video ? "v:" : "i:") + name + "@" + file.lastModified()
+                + "#" + file.length();
         byte[] cached = thumbCache.get(key);
         if (cached == null) {
-            cached = buildThumb(file);
+            cached = video ? buildVideoThumb(file) : buildThumb(file);
             if (cached == null) {
                 writeJson(out, 415, "{\"ok\":false,\"error\":\"decode failed\"}");
                 return;
@@ -343,6 +387,40 @@ public class RemoteImportServer {
             thumbCache.put(key, cached);
         }
         writeResponse(out, 200, "image/jpeg", cached);
+    }
+
+    private byte[] buildVideoThumb(File file) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            Bitmap frame = retriever.getFrameAtTime(1_000_000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null) {
+                frame = retriever.getFrameAtTime(0L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            }
+            if (frame == null) {
+                return null;
+            }
+            int w = THUMB_W;
+            int h = Math.max(1, Math.round(frame.getHeight() * (THUMB_W / (float) frame.getWidth())));
+            Bitmap scaled = Bitmap.createScaledBitmap(frame, w, h, true);
+            if (scaled != frame) {
+                frame.recycle();
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream(64 * 1024);
+            scaled.compress(Bitmap.CompressFormat.JPEG, 82, bos);
+            scaled.recycle();
+            return bos.toByteArray();
+        } catch (Throwable t) {
+            Log.w(TAG, "video thumbnail failed for " + file.getName(), t);
+            return null;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private byte[] buildThumb(File file) {
@@ -381,7 +459,8 @@ public class RemoteImportServer {
     }
 
     private void serveUpload(Socket socket, InputStream in, OutputStream out,
-                            String name, long contentLength, boolean chunked) throws IOException {
+                            String name, boolean video, long contentLength,
+                            boolean chunked) throws IOException {
         if (!isSafeName(name)) {
             writeJson(out, 400, "{\"ok\":false,\"error\":\"bad name\"}");
             return;
@@ -394,9 +473,13 @@ public class RemoteImportServer {
             writeJson(out, 413, "{\"ok\":false,\"error\":\"too large\"}");
             return;
         }
-        String saved = host.saveWallpaper(name, new LimitedInputStream(in, contentLength), contentLength);
+        String saved = video
+                ? host.saveVideo(name, new LimitedInputStream(in, contentLength), contentLength)
+                : host.saveWallpaper(name, new LimitedInputStream(in, contentLength), contentLength);
         if (saved == null) {
-            writeJson(out, 415, "{\"ok\":false,\"error\":\"not a valid image\"}");
+            writeJson(out, 415, video
+                    ? "{\"ok\":false,\"error\":\"not a valid video\"}"
+                    : "{\"ok\":false,\"error\":\"not a valid image\"}");
             return;
         }
         Log.i(TAG, "remote upload saved " + saved);
@@ -404,26 +487,26 @@ public class RemoteImportServer {
         writeJson(out, 200, "{\"ok\":true,\"name\":" + jsonString(saved) + "}");
     }
 
-    private void serveApply(OutputStream out, String name) throws IOException {
+    private void serveApply(OutputStream out, String name, boolean video) throws IOException {
         if (!isSafeName(name)) {
             writeJson(out, 400, "{\"ok\":false,\"error\":\"bad name\"}");
             return;
         }
-        boolean ok = host.applyWallpaper(name);
+        boolean ok = video ? host.applyVideo(name) : host.applyWallpaper(name);
         if (ok) {
-            host.onRemoteEvent("已切换壁纸 " + name);
+            host.onRemoteEvent((video ? "已切换动态壁纸 " : "已切换壁纸 ") + name);
         }
         writeJson(out, ok ? 200 : 404, ok
                 ? "{\"ok\":true}"
                 : "{\"ok\":false,\"error\":\"not found\"}");
     }
 
-    private void serveDelete(OutputStream out, String name) throws IOException {
+    private void serveDelete(OutputStream out, String name, boolean video) throws IOException {
         if (!isSafeName(name)) {
             writeJson(out, 400, "{\"ok\":false,\"error\":\"bad name\"}");
             return;
         }
-        boolean ok = host.deleteWallpaper(name);
+        boolean ok = video ? host.deleteVideo(name) : host.deleteWallpaper(name);
         if (ok) {
             host.onRemoteEvent("已删除 " + name);
             thumbCache.clear();
@@ -464,8 +547,13 @@ public class RemoteImportServer {
             return false;
         }
         String lower = name.toLowerCase();
-        return lower.endsWith(".jpg") || lower.endsWith(".jpeg")
-                || lower.endsWith(".png") || lower.endsWith(".webp");
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                || lower.endsWith(".png") || lower.endsWith(".webp")) {
+            return true;
+        }
+        return lower.endsWith(".mp4") || lower.endsWith(".mkv")
+                || lower.endsWith(".webm") || lower.endsWith(".mov")
+                || lower.endsWith(".m4v") || lower.endsWith(".ts");
     }
 
     static String jsonString(String s) {
