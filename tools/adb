@@ -7,5 +7,6 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 ADB="$DIR/../local/platform-tools/adb"
 [ -x "$ADB" ] || ADB="${DEVTOOLS:-$HOME/dev-tools}/platform-tools/adb"
 export HOME="$DIR/../local/adbhome"
+mkdir -p "$HOME/.android" 2>/dev/null || true   # 新克隆的仓库里没有这个目录，adb 自己建不了多级
 export ADB_MDNS=0
 exec "$ADB" "$@"
