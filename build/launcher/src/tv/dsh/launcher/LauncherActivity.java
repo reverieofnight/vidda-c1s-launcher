@@ -133,6 +133,7 @@ public class LauncherActivity extends Activity {
     private static final String KEY_SLIDESHOW_SEC = "slideshow_interval_sec";
     private static final String KEY_SLIDESHOW_FADE = "slideshow_fade";
     private static final String KEY_VIDEO_MUTED = "video_muted";
+    private static final String KEY_VIDEO_LOOP = "video_loop";
     private static final int[] SLIDESHOW_STEPS = {10, 30, 60, 300, 600, 1800};
     /** UI 壁纸相对视频 plane 的 1px 对齐微调 */
     private static final float WALLPAPER_NUDGE_X = 1f;
@@ -285,6 +286,7 @@ public class LauncherActivity extends Activity {
     private boolean slideshowEnabled = true;
     private int slideshowIntervalSec = 30;
     private boolean slideshowFade = true;
+    private boolean videoLoopEnabled = true;
     private boolean videoMuted = true;
     private MediaPlayer videoPlayerRef;
     private int videoPlayToken;
@@ -833,6 +835,10 @@ public class LauncherActivity extends Activity {
                 }
                 wallpaperVideo.setVisibility(View.VISIBLE);
                 wallpaperVideo.start();
+                handler.removeCallbacks(videoEndGuard);
+                if (!videoLoopEnabled) {
+                    handler.postDelayed(videoEndGuard, 300);
+                }
                 Log.i(TAG, "video wallpaper prepared " + mp.getVideoWidth()
                         + "x" + mp.getVideoHeight() + " " + file.getName());
             }
@@ -877,6 +883,7 @@ public class LauncherActivity extends Activity {
 
     private void stopVideoWallpaper() {
         videoPlayToken++;
+        handler.removeCallbacks(videoEndGuard);
         if (wallpaperVideo != null) {
             wallpaperVideo.setOnPreparedListener(null);
             wallpaperVideo.setOnInfoListener(null);
@@ -889,6 +896,37 @@ public class LauncherActivity extends Activity {
             wallpaperVideo.setVisibility(View.GONE);
         }
     }
+
+    /** 关闭循环时，播到结尾就停在最后一帧 */
+    private final Runnable videoEndGuard = new Runnable() {
+        @Override
+        public void run() {
+            MediaPlayer mp = videoPlayerRef;
+            if (mp == null || !videoWallpaperMode || videoLoopEnabled) {
+                return;
+            }
+            int pos;
+            int dur;
+            try {
+                if (!mp.isPlaying()) {
+                    return;
+                }
+                pos = mp.getCurrentPosition();
+                dur = mp.getDuration();
+            } catch (Throwable t) {
+                return;
+            }
+            if (dur > 0 && pos >= dur - 150) {
+                try {
+                    mp.pause();
+                } catch (Throwable ignored) {
+                }
+                Log.i(TAG, "video wallpaper held on last frame " + pos + "/" + dur);
+                return;
+            }
+            handler.postDelayed(this, 200);
+        }
+    };
 
     private void applyVideoByName(String name) {
         int index = -1;
@@ -1610,6 +1648,7 @@ public class LauncherActivity extends Activity {
         slideshowIntervalSec = sp.getInt(KEY_SLIDESHOW_SEC, 30);
         slideshowFade = sp.getBoolean(KEY_SLIDESHOW_FADE, true);
         videoMuted = sp.getBoolean(KEY_VIDEO_MUTED, true);
+        videoLoopEnabled = sp.getBoolean(KEY_VIDEO_LOOP, true);
     }
 
     private void savePlaybackSettings() {
@@ -1618,6 +1657,7 @@ public class LauncherActivity extends Activity {
                 .putInt(KEY_SLIDESHOW_SEC, slideshowIntervalSec)
                 .putBoolean(KEY_SLIDESHOW_FADE, slideshowFade)
                 .putBoolean(KEY_VIDEO_MUTED, videoMuted)
+                .putBoolean(KEY_VIDEO_LOOP, videoLoopEnabled)
                 .apply();
     }
 
@@ -1737,10 +1777,36 @@ public class LauncherActivity extends Activity {
         });
         box.addView(swMute);
 
+        Switch swLoop = makeSettingsSwitch("视频循环播放", videoLoopEnabled);
+        swLoop.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                videoLoopEnabled = isChecked;
+                savePlaybackSettings();
+                handler.removeCallbacks(videoEndGuard);
+                if (videoPlayerRef != null && videoWallpaperMode) {
+                    try {
+                        if (isChecked) {
+                            videoPlayerRef.setLooping(true);
+                            if (!videoPlayerRef.isPlaying()) {
+                                videoPlayerRef.start();
+                            }
+                        } else if (videoPlayerRef.isPlaying()) {
+                            handler.postDelayed(videoEndGuard, 200);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+                Log.i(TAG, "video loop = " + isChecked);
+            }
+        });
+        box.addView(swLoop);
+
         TextView desc = new TextView(this);
         desc.setText("幻灯片按上面设定的间隔自动换壁纸；4K 模式下切换一律硬切，"
                 + "「切换特效」只对 1080p 静态壁纸生效。\n"
-                + "动态壁纸播放时默认静音，关掉本项后使用电视当前音量。\n\n"
+                + "动态壁纸播放时默认静音，关掉本项后使用电视当前音量。\n"
+                + "关掉「视频循环播放」后，视频播完停在最后一帧。\n\n"
                 + "4K 图片目录：\n"
                 + new File(getExternalFilesDir(null), FOUR_K_BG_DIR).getAbsolutePath());
         desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
