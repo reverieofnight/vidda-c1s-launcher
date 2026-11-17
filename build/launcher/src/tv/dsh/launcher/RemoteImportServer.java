@@ -393,8 +393,19 @@ public class RemoteImportServer {
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         try {
             retriever.setDataSource(file.getAbsolutePath());
-            Bitmap frame = retriever.getFrameAtTime(1_000_000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            // 4K 视频直接 getFrameAtTime 在本机会解码失败（返回 null），
+            // 先用 getScaledFrameAtTime 按缩略图尺寸解码，失败再退回原尺寸。
+            Bitmap frame = null;
+            try {
+                int h = Math.max(1, Math.round(THUMB_W * 9f / 16f));
+                frame = retriever.getScaledFrameAtTime(1_000_000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC, THUMB_W, h);
+            } catch (Throwable ignored) {
+            }
+            if (frame == null) {
+                frame = retriever.getFrameAtTime(1_000_000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            }
             if (frame == null) {
                 frame = retriever.getFrameAtTime(0L,
                         MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
