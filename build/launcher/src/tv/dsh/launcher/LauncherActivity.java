@@ -140,6 +140,8 @@ public class LauncherActivity extends Activity {
     private static final long FOUR_K_UI_CROSSFADE_MS = 1000L;
     /** 首帧渲染回调后给合成器一点时间，避免揭盖瞬间黑一帧 */
     private static final long FOUR_K_FRAME_SETTLE_MS = 150L;
+    /** 静态壁纸首帧上屏后，再过这么久主动暂停，把这一帧留在 surface 上 */
+    private static final long FOUR_K_PAUSE_AFTER_MS = 600L;
     /** 硬切模式：UI 预览画出后 100ms 再切视频，避免点击瞬间黑 */
     private static final long FOUR_K_VIDEO_SWITCH_MS = 100L;
     /** UI 和 4K 视频使用同一个 overscan，避免一层放大一层不放大 */
@@ -1002,7 +1004,7 @@ public class LauncherActivity extends Activity {
             @Override
             public boolean onInfo(MediaPlayer mp, int what, int extra) {
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                    Log.i(TAG, "4K static rendering start (keep playing)");
+                    Log.i(TAG, "4K static rendering start");
                     handler.postDelayed(new Runnable() {
                         @Override
                         public void run() {
@@ -1012,6 +1014,21 @@ public class LauncherActivity extends Activity {
                             }
                         }
                     }, FOUR_K_FRAME_SETTLE_MS);
+                    // 静态壁纸只有 2 个相同的帧：首帧上屏后主动暂停，把这一帧留在 surface 上，
+                    // 省掉解码器每 2 秒重复解一帧 4K。setLooping 仍是 true，所以永远走不到 EOS，
+                    // 不会出现播放完成后的黑屏。
+                    handler.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (token != fourKPlayToken || !fourKStaticMode) {
+                                return;
+                            }
+                            if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
+                                wallpaperVideo.pause();
+                                Log.i(TAG, "4K static paused on frame");
+                            }
+                        }
+                    }, FOUR_K_PAUSE_AFTER_MS);
                 }
                 return false;
             }
