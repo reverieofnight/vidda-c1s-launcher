@@ -144,8 +144,8 @@ public final class QrCode {
     }
 
     /** 把给定的目标像素尺寸换算成整数放大倍率（不足最小 3 倍时按最小算）。 */
-    public static int scaleFor(Symbol s, int targetPx) {
-        int modules = s.size + QUIET_ZONE * 2;
+    public static int scaleFor(Symbol s, int targetPx, int quietZone) {
+        int modules = s.size + quietZone * 2;
         return Math.max(3, targetPx / modules);
     }
 

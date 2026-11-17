@@ -1718,7 +1718,7 @@ public class LauncherActivity extends Activity {
         remoteQrView = new ImageView(this);
         remoteQrView.setVisibility(View.GONE);
         remoteQrView.setBackgroundColor(Color.WHITE);
-        remoteQrView.setPadding(dp(10), dp(10), dp(10), dp(10));
+        remoteQrView.setPadding(dp(2), dp(2), dp(2), dp(2));
         LinearLayout.LayoutParams qrParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         qrParams.topMargin = dp(14);
@@ -1757,9 +1757,11 @@ public class LauncherActivity extends Activity {
         }
         try {
             QrCode.Symbol symbol = QrCode.encode(url, QrCode.EC_M);
-            int scale = QrCode.scaleFor(symbol, dp(165));
-            int[] pixels = QrCode.renderPixels(symbol, QrCode.QUIET_ZONE, scale, 0xFF000000, 0xFFFFFFFF);
-            int px = symbol.size + QrCode.QUIET_ZONE * 2;
+            // 静区只留 2 个模块（标准建议 4），把省下的空间给内容区；外侧白卡片再补一点边
+            final int quiet = 2;
+            int scale = QrCode.scaleFor(symbol, dp(174), quiet);
+            int[] pixels = QrCode.renderPixels(symbol, quiet, scale, 0xFF000000, 0xFFFFFFFF);
+            int px = symbol.size + quiet * 2;
             px *= scale;
             Bitmap bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888);
             bitmap.setPixels(pixels, 0, px, 0, 0, px, px);
