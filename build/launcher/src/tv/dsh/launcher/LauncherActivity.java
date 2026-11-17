@@ -619,7 +619,7 @@ public class LauncherActivity extends Activity {
         menuBar.setBackgroundResource(R.drawable.menu_strip_bg);
         menuBar.setPadding(dp(MENU_PADDING_H_DP), dp(MENU_PADDING_V_DP), dp(MENU_PADDING_H_DP), dp(MENU_PADDING_V_DP));
 
-        menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_gallery, "背景设置"));
+        menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_gallery, "壁纸管理"));
         menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_manage, "桌面设置"));
         menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_info_details, "关于"));
 
@@ -1902,8 +1902,9 @@ public class LauncherActivity extends Activity {
         item.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if ("背景设置".equals(label)) {
-                    showBackgroundSettings();
+                if ("壁纸管理".equals(label)) {
+                    // 菜单直达壁纸管理页（播放设置在管理页里）
+                    openWallpaperManager();
                 } else {
                     // 其它菜单项功能待实现
                     Log.i(TAG, "menu item clicked: " + label + " (todo)");
