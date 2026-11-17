@@ -33,6 +33,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.renderscript.Allocation;
 import android.renderscript.Element;
 import android.renderscript.RenderScript;
@@ -283,8 +284,10 @@ public class LauncherActivity extends Activity {
     private int videoIndex = -1;
     private String currentVideoName;
     private boolean videoWallpaperMode;
-    /** 播放器里已经 prepare 好的视频路径，用于从后台回来时原地续播 */
+    private boolean videoWallpaperReady;
+    private int videoRetryCount;
     private String playingVideoPath;
+    /** 播放器里已经 prepare 好的视频路径，用于从后台回来时原地续播 */
     private boolean slideshowEnabled = true;
     private int slideshowIntervalSec = 30;
     private boolean slideshowFade = true;
@@ -815,6 +818,7 @@ public class LauncherActivity extends Activity {
             return;
         }
         final int token = ++videoPlayToken;
+        videoWallpaperReady = false;
         handler.removeCallbacks(bgTick);
         fourKStaticMode = false;
         fourKEncoding = false;
@@ -830,13 +834,37 @@ public class LauncherActivity extends Activity {
                 videoPlayerRef = mp;
                 float volume = videoMuted ? 0f : 1f;
                 mp.setVolume(volume, volume);
-                bgFront.setVisibility(View.GONE);
-                bgBack.setVisibility(View.GONE);
+                // 先保留 bgFront/bgBack（显示上一张壁纸），等首帧真正渲染出来再隐藏，
+                // 避免 prepare 期间整屏黑掉。
+                if (bgFront != null && bgFront.getDrawable() != null) {
+                    bgFront.setVisibility(View.VISIBLE);
+                }
                 if (wallpaperTransitionLayer != null) {
                     wallpaperTransitionLayer.setVisibility(View.GONE);
                 }
                 wallpaperVideo.setVisibility(View.VISIBLE);
                 wallpaperVideo.start();
+                // 看门狗：3 秒内没有收到首帧就重建一次，避免停在黑屏不再恢复
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (token != videoPlayToken || !videoWallpaperMode
+                                || videoWallpaperReady) {
+                            return;
+                        }
+                        if (videoRetryCount < 1) {
+                            videoRetryCount++;
+                            Log.w(TAG, "video wallpaper no frame in 3s, retry prepare #"
+                                    + videoRetryCount);
+                            refreshVideoWallpaperMode();
+                        } else {
+                            Log.w(TAG, "video wallpaper still black, fall back to image mode");
+                            videoRetryCount = 0;
+                            leaveVideoWallpaperMode();
+                            refresh4KStaticMode();
+                        }
+                    }
+                }, 3000);
                 handler.removeCallbacks(videoEndGuard);
                 if (!videoLoopEnabled) {
                     handler.postDelayed(videoEndGuard, 300);
@@ -850,6 +878,10 @@ public class LauncherActivity extends Activity {
             public boolean onInfo(MediaPlayer mp, int what, int extra) {
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                     Log.i(TAG, "video wallpaper rendering start");
+                    videoWallpaperReady = true;
+                    videoRetryCount = 0;
+                    bgFront.setVisibility(View.GONE);
+                    bgBack.setVisibility(View.GONE);
                     handler.postDelayed(new Runnable() {
                         @Override
                         public void run() {
@@ -885,8 +917,9 @@ public class LauncherActivity extends Activity {
     }
 
     private void stopVideoWallpaper() {
-        videoPlayToken++;
+        videoWallpaperReady = false;
         playingVideoPath = null;
+        videoPlayToken++;
         videoPlayerRef = null;
         handler.removeCallbacks(videoEndGuard);
         if (wallpaperVideo != null) {
@@ -945,32 +978,32 @@ public class LauncherActivity extends Activity {
     }
 
     /**
-     * 从后台回到桌面时，如果播放器还停在同一个文件上，直接 start() 续播。
-     * 之前每次都重新 setVideoPath，MediaPlayer 要重新 prepare，会黑一帧（像重新加载）。
+     * 回到前台：
+     * 1) 播放器还停在同一个文件上、只是被 pause 了 → 直接 start() 续播，不出黑帧；
+     * 2) 播放器已经不在了（进程内重建/曾被 stop）→ 重新 prepare，bgFront 垫着上一张壁纸直到首帧。
+     * playVideoWallpaper 里还有 3 秒看门狗兜底，真卡黑屏会重试一次再退回图片模式。
      */
-    private boolean resumeVideoWallpaperIfPossible() {
-        if (!videoWallpaperMode || wallpaperVideo == null || videoPlayerRef == null
-                || playingVideoPath == null) {
-            return false;
-        }
+    private void restoreVideoWallpaperOnForeground() {
         File file = currentVideoFile();
-        if (file == null || !playingVideoPath.equals(file.getAbsolutePath())) {
-            return false;
-        }
-        try {
-            if (!wallpaperVideo.isPlaying()) {
-                wallpaperVideo.start();
+        if (videoPlayerRef != null && wallpaperVideo != null && file != null
+                && playingVideoPath != null
+                && playingVideoPath.equals(file.getAbsolutePath())) {
+            try {
+                if (!wallpaperVideo.isPlaying()) {
+                    wallpaperVideo.start();
+                }
+                videoWallpaperReady = true;
+                if (!videoLoopEnabled) {
+                    handler.removeCallbacks(videoEndGuard);
+                    handler.postDelayed(videoEndGuard, 200);
+                }
+                Log.i(TAG, "video wallpaper resumed " + file.getName());
+                return;
+            } catch (Throwable t) {
+                Log.w(TAG, "video resume failed: " + t);
             }
-            if (!videoLoopEnabled) {
-                handler.removeCallbacks(videoEndGuard);
-                handler.postDelayed(videoEndGuard, 200);
-            }
-            Log.i(TAG, "video wallpaper resumed " + file.getName());
-            return true;
-        } catch (Throwable t) {
-            Log.w(TAG, "video wallpaper resume failed: " + t);
-            return false;
         }
+        refreshVideoWallpaperMode();
     }
 
     private void applyVideoByName(String name) {
@@ -4342,9 +4375,7 @@ public class LauncherActivity extends Activity {
         } else {
             reloadApps();
             if (videoWallpaperMode) {
-                if (!resumeVideoWallpaperIfPossible()) {
-                    refreshVideoWallpaperMode();
-                }
+                restoreVideoWallpaperOnForeground();
             } else {
                 refresh4KStaticMode();
             }
@@ -4370,9 +4401,7 @@ public class LauncherActivity extends Activity {
         reloadApps();
         focusFirstDockItem();
         if (videoWallpaperMode) {
-            if (!resumeVideoWallpaperIfPossible()) {
-                refreshVideoWallpaperMode();
-            }
+            restoreVideoWallpaperOnForeground();
         } else {
             refresh4KStaticMode();
         }
