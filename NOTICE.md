@@ -7,7 +7,7 @@
 - 组件：`build/launcher/jni/x264_jni.c` 编译出的 `build/launcher/libs/arm64-v8a/libx264jni.so`，内部静态链接 x264。
 - x264 许可证：**GPL-2.0-or-later**（见 x264 源码 `COPYING` 与 `x264.h` 头部声明），另有 x264 LLC 的商业授权可替代。
 - 影响：JNI 与 x264 静态链接构成结合作品；**一旦对外分发本 APK 或其源码，整体即落入 GPL**，需按 GPL 提供完整对应源码（含构建脚本、本仓库中所有改动）并附许可证文本。不对外分发（仅自己使用）则不触发。
-- 重新编译 JNI 需要 x264 源码（`/tmp/x264-stable` 或 `git clone https://code.videolan.org/videolan/x264`）与 NDK r25c。
+- 重新编译 JNI 需要 x264 源码（`~/dev-tools/x264-stable` 或 `git clone https://code.videolan.org/videolan/x264`）与 NDK r25c（`~/dev-tools/android-ndk-r25c`）。
 
 ## 2. H.264 专利（与 x264 版权许可无关）
 

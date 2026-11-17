@@ -8,7 +8,16 @@
 
 用法：python3 tools/ui-shot.py [URL] [输出目录]
 """
-import sys, json, pathlib
+import os, sys, json, pathlib
+
+# 机器级共享的工具都放在 ~/dev-tools（见该目录 README），换项目不用重装
+_HOME = pathlib.Path.home()
+_lib = _HOME / "dev-tools" / "lib"
+if _lib.is_dir():  # playwright 自带的 node 需要 libatomic.so.1，本机系统里没有
+    _old = os.environ.get("LD_LIBRARY_PATH", "")
+    os.environ["LD_LIBRARY_PATH"] = str(_lib) + (":" + _old if _old else "")
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_HOME / ".cache" / "ms-playwright"))
+
 from playwright.sync_api import sync_playwright
 
 url = sys.argv[1] if len(sys.argv) > 1 else "http://192.168.2.19:8080/"
