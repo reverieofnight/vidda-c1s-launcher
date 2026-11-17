@@ -15,7 +15,7 @@
 | 4K 静态壁纸管线（x264 软编 → 缓存 → VideoView 循环播放） | 可用，硬切无动画 |
 | 1080p 轮播兜底（MediaCodec 不可用时退化为静态图淡入淡出） | 可用 |
 | 壁纸管理页（导入 / 排序 / 删除 / 单张与全量清缓存） | 可用 |
-| 远程导入（局域网 HTTP 上传页，端口 8080 起） | 可用 |
+| 远程导入（局域网 HTTP 上传页，电视上显示二维码，端口 8080 起） | 可用 |
 | 顶部菜单 | 三项，仅「背景设置」有实现 |
 | 开机自启 | 无障碍服务方案生效；`BOOT_COMPLETED` 被厂商拦截 |
 | 「桌面设置」「关于」菜单 | 未实现（点了只打日志） |
@@ -30,6 +30,7 @@ build/
   build.sh                设置入口 APK（settingsentry）构建脚本
   launcher/               桌面源码：src/ res/ jni/ AndroidManifest.xml
     libs/arm64-v8a/libx264jni.so   预编译 x264 JNI（见 NOTICE.md）
+    src/tv/dsh/launcher/QrCode.java   零依赖二维码编码器（远程导入页用）
     www/upload.html  远程导入的上传页（构建时打进 assets/www/）
   app/                    settingsentry 源码
   icons/ext/              设置入口图标素材

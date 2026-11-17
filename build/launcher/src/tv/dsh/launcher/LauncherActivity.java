@@ -296,6 +296,7 @@ public class LauncherActivity extends Activity {
     /** 远程导入页（局域网 HTTP 上传，全屏浮层，盖在管理页上面） */
     private FrameLayout remoteModule;
     private TextView remoteUrlView;
+    private ImageView remoteQrView;
     private TextView remoteStatusView;
     private TextView remoteBackButton;
     private RemoteImportServer remoteServer;
@@ -1495,7 +1496,7 @@ public class LauncherActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("壁纸管理");
         title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         column.addView(title);
 
@@ -1681,7 +1682,7 @@ public class LauncherActivity extends Activity {
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
         column.setGravity(Gravity.CENTER_HORIZONTAL);
-        column.setPadding(dp(64), dp(56), dp(64), dp(44));
+        column.setPadding(dp(64), dp(34), dp(64), dp(24));
         remoteModule.addView(column, matchParent());
 
         TextView title = new TextView(this);
@@ -1694,32 +1695,42 @@ public class LauncherActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView hint = new TextView(this);
-        hint.setText("同一 WiFi 下用电脑或手机浏览器打开下面的地址，即可上传、切换、删除壁纸。\n"
+        hint.setText("手机扫码，或在同一 WiFi 下用电脑/手机浏览器打开下面的地址，即可上传、切换、删除壁纸。\n"
                 + "上传后需要点「设为当前」才会换画面；离开本页会自动关闭服务。");
         hint.setTextColor(0xFFB8C4D2);
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         hint.setGravity(Gravity.CENTER);
-        hint.setLineSpacing(dp(8), 1f);
-        hint.setPadding(0, dp(12), 0, dp(26));
+        hint.setLineSpacing(dp(6), 1f);
+        hint.setPadding(0, dp(10), 0, dp(18));
         column.addView(hint, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         remoteUrlView = new TextView(this);
         remoteUrlView.setText("正在启动…");
         remoteUrlView.setTextColor(0xFF4C8DFF);
-        remoteUrlView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 38);
+        remoteUrlView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
         remoteUrlView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         remoteUrlView.setGravity(Gravity.CENTER);
-        remoteUrlView.setPadding(dp(30), dp(18), dp(30), dp(18));
+        remoteUrlView.setPadding(dp(24), dp(10), dp(24), dp(10));
         remoteUrlView.setBackgroundColor(0xFF131B26);
         column.addView(remoteUrlView);
+
+        remoteQrView = new ImageView(this);
+        remoteQrView.setVisibility(View.GONE);
+        remoteQrView.setBackgroundColor(Color.WHITE);
+        remoteQrView.setPadding(dp(10), dp(10), dp(10), dp(10));
+        LinearLayout.LayoutParams qrParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        qrParams.topMargin = dp(14);
+        qrParams.gravity = Gravity.CENTER_HORIZONTAL;
+        column.addView(remoteQrView, qrParams);
 
         remoteStatusView = new TextView(this);
         remoteStatusView.setText("等待连接…");
         remoteStatusView.setTextColor(0xFF7F8FA3);
         remoteStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         remoteStatusView.setGravity(Gravity.CENTER);
-        remoteStatusView.setPadding(0, dp(18), 0, 0);
+        remoteStatusView.setPadding(0, dp(12), 0, dp(10));
         column.addView(remoteStatusView);
 
         View spacer = new View(this);
@@ -1737,6 +1748,28 @@ public class LauncherActivity extends Activity {
         });
         actions.addView(remoteBackButton);
         column.addView(actions);
+    }
+
+    /** 把当前地址编码成二维码，遥控器扫不到也没关系，地址仍然在下面。 */
+    private void updateRemoteQr(String url) {
+        if (remoteQrView == null) {
+            return;
+        }
+        try {
+            QrCode.Symbol symbol = QrCode.encode(url, QrCode.EC_M);
+            int scale = QrCode.scaleFor(symbol, dp(165));
+            int[] pixels = QrCode.renderPixels(symbol, QrCode.QUIET_ZONE, scale, 0xFF000000, 0xFFFFFFFF);
+            int px = symbol.size + QrCode.QUIET_ZONE * 2;
+            px *= scale;
+            Bitmap bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888);
+            bitmap.setPixels(pixels, 0, px, 0, 0, px, px);
+            remoteQrView.setImageBitmap(bitmap);
+            remoteQrView.setVisibility(View.VISIBLE);
+            Log.i(TAG, "remote import qr: v" + symbol.version + " " + px + "px mask=" + symbol.mask);
+        } catch (RuntimeException e) {
+            remoteQrView.setVisibility(View.GONE);
+            Log.w(TAG, "remote import qr failed: " + e.getMessage());
+        }
     }
 
     private void openRemoteImport() {
@@ -1771,12 +1804,19 @@ public class LauncherActivity extends Activity {
             String url = "http://" + (ip == null ? "127.0.0.1" : ip)
                     + ":" + remoteServer.getPort() + "/";
             remoteUrlView.setText(url);
+            if (ip == null) {
+                // 没有局域网地址时，二维码指向 127.0.0.1，手机扫了也没用
+                remoteQrView.setVisibility(View.GONE);
+            } else {
+                updateRemoteQr(url);
+            }
             remoteStatusView.setText(ip == null
                     ? "没有检测到局域网地址，请确认电视已连接网络"
                     : "等待浏览器连接…");
             Log.i(TAG, "remote import opened: " + url);
         } else {
             remoteUrlView.setText("启动失败");
+            remoteQrView.setVisibility(View.GONE);
             remoteStatusView.setText("端口 8080-8089 都被占用，请重试");
             Log.w(TAG, "remote import server start failed");
         }

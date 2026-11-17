@@ -67,7 +67,8 @@ echo "[4/7] javac"
   "$APP/src/tv/dsh/launcher/LauncherActivity.java" \
   "$APP/src/tv/dsh/launcher/BootReceiver.java" \
   "$APP/src/tv/dsh/launcher/BootAccessibilityService.java" \
-  "$APP/src/tv/dsh/launcher/RemoteImportServer.java" > "$OUT/javac.log" 2>&1 \
+  "$APP/src/tv/dsh/launcher/RemoteImportServer.java" \
+  "$APP/src/tv/dsh/launcher/QrCode.java" > "$OUT/javac.log" 2>&1 \
   || { cat "$OUT/javac.log"; echo "javac 失败"; exit 1; }
 grep -v 'bootstrap class path' "$OUT/javac.log" || true
 
