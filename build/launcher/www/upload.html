@@ -45,6 +45,10 @@
   }
   button:hover { background: #223044; }
   button.primary { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+  button:disabled, button:disabled:hover {
+    background: #141c27; border-color: #202d3c; color: #5d6c7e;
+    cursor: default; opacity: .85;
+  }
   button.danger:hover { background: #4a1d24; border-color: #7a2a35; color: #ff9aa6; }
   .toast {
     position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
@@ -148,9 +152,12 @@
       ops.className = 'ops';
 
       var applyBtn = document.createElement('button');
-      applyBtn.className = 'primary';
+      applyBtn.className = it.current ? 'ghost' : 'primary';
       applyBtn.textContent = it.current ? '当前壁纸' : '设为当前';
       applyBtn.disabled = it.current;
+      if (it.current) {
+        applyBtn.title = '已经是当前壁纸';
+      }
       applyBtn.onclick = function () {
         applyBtn.disabled = true;
         api('/api/apply?name=' + encodeURIComponent(it.name), { method: 'POST' })
