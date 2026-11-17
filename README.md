@@ -1,0 +1,94 @@
+# 投影仪桌面（Hisense VIDAA TV Launcher）
+
+自制的电视桌面替代品，跑在 **海信 VIDAA 智能电视**（Android 9 / API 28 / MediaTek MT9669）上：
+4K 静态壁纸（x264 编码的 1fps 循环 mp4）、时钟/天气、底部应用坞、原生风格顶部菜单，外加一个完整的**壁纸管理页**（缩略图网格、设为当前/排序/删图、缓存统计与清理、U 盘/本地导入）。
+
+- 包名：`tv.dsh.launcher`
+- 当前版本：`versionCode 1` / `versionName 0.1`
+- 设备实测：1920×1080 UI（320dpi），面板走 4K 输出；无 4K 硬件编码器，所以 4K 静图靠自带的 x264 JNI 软编 2 帧。
+
+## 功能一句话概览
+
+| 模块 | 状态 |
+|---|---|
+| 桌面主体（壁纸 + 时钟 + 天气 + 应用坞 + 控制行） | 可用 |
+| 4K 静态壁纸管线（x264 软编 → 缓存 → VideoView 循环播放） | 可用，硬切无动画 |
+| 1080p 轮播兜底（MediaCodec 不可用时退化为静态图淡入淡出） | 可用 |
+| 壁纸管理页（导入 / 排序 / 删除 / 单张与全量清缓存） | 可用 |
+| 顶部菜单 | 三项，仅「背景设置」有实现 |
+| 开机自启 | 无障碍服务方案生效；`BOOT_COMPLETED` 被厂商拦截 |
+| 「桌面设置」「关于」菜单 | 未实现（点了只打日志） |
+
+详细现状、已知问题、待办见 **[项目说明.md](项目说明.md)**；真机调试命令见 **[投影仪-ADB操作手册.md](投影仪-ADB操作手册.md)**。
+
+## 目录结构
+
+```
+build/
+  build-launcher.sh       桌面 APK 构建脚本（aapt2 → javac → d8 → zipalign → apksigner）
+  build.sh                设置入口 APK（settingsentry）构建脚本
+  launcher/               桌面源码：src/ res/ jni/ AndroidManifest.xml
+    libs/arm64-v8a/libx264jni.so   预编译 x264 JNI（见 NOTICE.md）
+  app/                    settingsentry 源码
+  icons/ext/              设置入口图标素材
+tools/
+  adb                     adb 包装器（HOME 重定向到 local/adbhome）
+  sync-backgrounds*.sh    批量同步壁纸到设备
+local/                    本地私有目录，整目录不入库（详见 local/README.md）
+  toolchain/              JDK + build-tools + android.jar
+  launcher-out/           桌面 APK 构建产物
+  settings-out/           设置入口 APK 构建产物
+  keystore.jks            签名密钥
+  platform-tools/         adb 客户端
+  adbhome/                adb 的 HOME（含已授权 adbkey）
+  screens/                过程截图（106 张）
+  icons/settings.apk      早期图标素材 APK
+  背景图/                8 张壁纸原图（构建时裁成 1920×1080 assets）
+  背景图4k/              4K 测试图
+  桌面演示.mp4 / 8K狼标准黑底.jpg / Thumbs.db
+```
+
+壁纸原图属于**临时资源**（大文件、授权待确认），不进仓库，只放 `local/背景图/`。
+
+`local/` 之外的路径都是仓库内容；`local/` 里只有 `README.md` 被跟踪。
+
+## 环境准备
+
+仓库不含工具链和平台工具，需要自己放到 `local/` 下（目录名固定）：
+
+| 依赖 | 位置 | 说明 |
+|---|---|---|
+| JDK 8/17 | `local/toolchain/jdk` | 需要 `bin/javac`、`bin/keytool` |
+| Android build-tools | `local/toolchain/bt` | 需要 `aapt2`、`d8`、`zipalign`、`apksigner` |
+| `android.jar`（API 28） | `local/toolchain/platform/android.jar` | 编译 bootclasspath |
+| ffmpeg | `PATH` 中 | 裁切壁纸；缺失时脚本直接拷贝原图 |
+| adb | `local/platform-tools/adb` | `tools/adb` 包装器默认调这里 |
+| NDK r25c + x264 源码 | 仅**修改 JNI** 时才需要 | 见 `build/launcher/jni/` |
+
+## 构建
+
+```sh
+cd build
+export LANG=C.UTF-8 LC_ALL=C.UTF-8          # 必须，否则 JDK 报 Error loading java.security file
+export JAVA_HOME="$PWD/../local/toolchain/jdk"
+export PATH="$JAVA_HOME/bin:$PATH"
+sh build-launcher.sh                        # 产物：local/launcher-out/launcher.apk
+```
+
+签名密钥 `local/keystore.jks` 不入库；脚本发现缺失会自动生成（口令 `dshpass`，仅本地调试用）。
+
+## 安装 / 调试
+
+```sh
+./tools/adb connect 192.168.2.19:5555
+./tools/adb install -r local/launcher-out/launcher.apk
+./tools/adb shell am start -n tv.dsh.launcher/.LauncherActivity            # 桌面
+./tools/adb shell am start -n tv.dsh.launcher/.LauncherActivity --ez wallpaper_manager true
+./tools/adb exec-out screencap -p > /tmp/now.png
+```
+
+设备 `debuggable=false`，`run-as` 和直接读 `/data/data/tv.dsh.launcher` 都不可用，排查走 logcat（tag `DSHLauncher`）。
+
+## 关于许可
+
+本仓库目前**未声明开源许可**，且 `libx264jni.so` 链接了 **GPL-2.0-or-later** 的 x264；此外 H.264 标准还涉及第三方专利池（与 x264 的版权许可无关，x264 不提供专利许可）。在对外发布/分发前请先阅读 **[NOTICE.md](NOTICE.md)** 并确定整套许可方案。

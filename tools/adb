@@ -1,0 +1,8 @@
+#!/bin/sh
+# 工作区内的 adb 包装器
+# 作用：把 HOME 指到工作区内的 local/adbhome，避免 adb 往 /vol1/@appshare/Harness/.android 写（沙箱会拒）
+# 用法：tools/adb devices / connect / shell ...
+DIR=$(cd "$(dirname "$0")" && pwd)
+export HOME="$DIR/../local/adbhome"
+export ADB_MDNS=0
+exec "$DIR/../local/platform-tools/adb" "$@"

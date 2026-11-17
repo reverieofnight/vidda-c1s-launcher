@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  只用于开机后把自建桌面拉到前台：
+  - 不读取窗口内容（canRetrieveWindowContent=false）
+  - 只收窗口状态事件，代码里不做任何处理
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/accessibility_service_description"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="false"
+    android:accessibilityFlags="flagDefault" />
