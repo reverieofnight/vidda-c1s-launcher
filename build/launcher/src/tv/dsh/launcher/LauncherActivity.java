@@ -43,6 +43,7 @@ import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -285,6 +286,9 @@ public class LauncherActivity extends Activity {
     private String currentVideoName;
     private boolean videoWallpaperMode;
     private boolean videoWallpaperReady;
+    /** surface 还没建好时先把要播的文件记下来，surfaceCreated 之后再 setVideoPath。 */
+    private File pendingVideoFile;
+    private boolean videoSurfaceLost;
     private int videoRetryCount;
     private String playingVideoPath;
     /** 播放器里已经 prepare 好的视频路径，用于从后台回来时原地续播 */
@@ -379,6 +383,38 @@ public class LauncherActivity extends Activity {
 
         // 4K 视频壁纸测试层：普通 SurfaceView 会被压到 1080p，VideoView 走硬件视频 plane
         wallpaperVideo = new VideoView(this);
+        wallpaperVideo.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                Log.i(TAG, "video surface created");
+                if (pendingVideoFile != null) {
+                    File pending = pendingVideoFile;
+                    pendingVideoFile = null;
+                    Log.i(TAG, "video surface ready, prepare " + pending.getName());
+                    wallpaperVideo.setVideoPath(pending.getAbsolutePath());
+                } else if (videoSurfaceLost && videoWallpaperMode) {
+                    // Surface 被销毁过（打开管理页、切走再回来等），旧 MediaPlayer 已经没有
+                    // 输出目标了，直接重新 prepare 一次，否则画面会一直黑着。
+                    videoSurfaceLost = false;
+                    File file = currentVideoFile();
+                    if (file != null) {
+                        Log.i(TAG, "video surface recreated, re-prepare " + file.getName());
+                        videoWallpaperReady = false;
+                        wallpaperVideo.setVideoPath(file.getAbsolutePath());
+                    }
+                }
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                Log.i(TAG, "video surface destroyed");
+                videoSurfaceLost = true;
+            }
+        });
         wallpaperVideo.setFocusable(false);
         wallpaperVideo.setVisibility(View.GONE);
         desktopModule.addView(wallpaperVideo, matchParent());
@@ -682,6 +718,9 @@ public class LauncherActivity extends Activity {
         loadPlaybackSettings();
         restoreWallpaperMode();
         if (getIntent() != null && getIntent().getBooleanExtra("wallpaper_manager", false)) {
+            if ("video".equals(getIntent().getStringExtra("manager_tab"))) {
+                setManagerType(MANAGER_VIDEOS);
+            }
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
@@ -912,7 +951,16 @@ public class LauncherActivity extends Activity {
         });
         wallpaperVideo.setVisibility(View.VISIBLE);
         playingVideoPath = file.getAbsolutePath();
-        wallpaperVideo.setVideoPath(playingVideoPath);
+        wallpaperVideo.setVisibility(View.VISIBLE);
+        SurfaceHolder holder = wallpaperVideo.getHolder();
+        if (holder.getSurface() == null || !holder.getSurface().isValid()) {
+            // 没有输出目标时 setVideoPath 会 prepare 成功但永远不出帧（黑屏），
+            // 记录待播文件，等 surfaceCreated 回调里再 prepare。
+            pendingVideoFile = file;
+            Log.i(TAG, "video surface not ready, defer prepare " + file.getName());
+        } else {
+            wallpaperVideo.setVideoPath(playingVideoPath);
+        }
         Log.i(TAG, "video wallpaper play " + file.getName());
     }
 
@@ -4406,6 +4454,9 @@ public class LauncherActivity extends Activity {
             refresh4KStaticMode();
         }
         if (intent != null && intent.getBooleanExtra("wallpaper_manager", false)) {
+            if ("video".equals(intent.getStringExtra("manager_tab"))) {
+                setManagerType(MANAGER_VIDEOS);
+            }
             openWallpaperManager();
             if (intent.getBooleanExtra("remote_import", false)) {
                 openRemoteImport();
