@@ -38,11 +38,11 @@ tools/
   adb                     adb 包装器（HOME 重定向到 local/adbhome）
   sync-backgrounds*.sh    批量同步壁纸到设备
 local/                    本地私有目录，整目录不入库（详见 local/README.md）
-  toolchain/              JDK + build-tools + android.jar
+  toolchain/              （可选）JDK + build-tools + android.jar；默认在 ~/dev-tools/toolchain
   launcher-out/           桌面 APK 构建产物
   settings-out/           设置入口 APK 构建产物
   keystore.jks            签名密钥
-  platform-tools/         adb 客户端
+  platform-tools/         （可选）adb 客户端；默认在 ~/dev-tools/platform-tools
   adbhome/                adb 的 HOME（含已授权 adbkey）
   screens/                过程截图（106 张）
   icons/settings.apk      早期图标素材 APK
@@ -57,15 +57,15 @@ local/                    本地私有目录，整目录不入库（详见 local
 
 ## 环境准备
 
-仓库不含工具链和平台工具，需要自己放到 `local/` 下（目录名固定）：
+仓库不含工具链和平台工具。默认从**机器级共享目录** `~/dev-tools/` 取（清单与安装步骤见 `~/dev-tools/README.md`），项目里 `local/toolchain`、`local/platform-tools` 存在时优先用本地的（方便整包拷走）：
 
-| 依赖 | 位置 | 说明 |
+| 依赖 | 位置（先 local/，再 ~/dev-tools/） | 说明 |
 |---|---|---|
-| JDK 8/17 | `local/toolchain/jdk` | 需要 `bin/javac`、`bin/keytool` |
-| Android build-tools | `local/toolchain/bt` | 需要 `aapt2`、`d8`、`zipalign`、`apksigner` |
-| `android.jar`（API 28） | `local/toolchain/platform/android.jar` | 编译 bootclasspath |
+| JDK 8/17 | `local/toolchain/jdk` → `~/dev-tools/toolchain/jdk` | 需要 `bin/javac`、`bin/keytool` |
+| Android build-tools | `local/toolchain/bt` → `~/dev-tools/toolchain/bt` | 需要 `aapt2`、`d8`、`zipalign`、`apksigner` |
+| `android.jar`（API 28） | `local/toolchain/platform/android.jar` → `~/dev-tools/toolchain/platform/android.jar` | 编译 bootclasspath |
 | ffmpeg | `PATH` 中 | 裁切壁纸；缺失时脚本直接拷贝原图 |
-| adb | `local/platform-tools/adb` | `tools/adb` 包装器默认调这里 |
+| adb | `local/platform-tools/adb` → `~/dev-tools/platform-tools/adb` | `tools/adb` 包装器按此顺序找 |
 | NDK r25c + x264 源码 | 仅**修改 JNI** 时才需要 | 见 `build/launcher/jni/` |
 
 ## 构建
@@ -73,7 +73,7 @@ local/                    本地私有目录，整目录不入库（详见 local
 ```sh
 cd build
 export LANG=C.UTF-8 LC_ALL=C.UTF-8          # 必须，否则 JDK 报 Error loading java.security file
-export JAVA_HOME="$PWD/../local/toolchain/jdk"
+export JAVA_HOME="$HOME/dev-tools/toolchain/jdk"   # 或 local/toolchain/jdk
 export PATH="$JAVA_HOME/bin:$PATH"
 sh build-launcher.sh                        # 产物：local/launcher-out/launcher.apk
 ```

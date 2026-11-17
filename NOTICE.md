@@ -17,7 +17,7 @@
 
 ## 3. Android SDK 组件
 
-构建时使用 `aapt2`、`d8`、`zipalign`、`apksigner`、`android.jar`（Android SDK，Apache-2.0 / 各自条款），以及 `local/platform-tools` 中的 `adb`（Google 分发，Apache-2.0）。这些工具不入库，由使用方自行安装。
+构建时使用 `aapt2`、`d8`、`zipalign`、`apksigner`、`android.jar`（Android SDK，Apache-2.0 / 各自条款），以及 `~/dev-tools/platform-tools`（或 `local/platform-tools`）中的 `adb`（Google 分发，Apache-2.0）。这些工具不入库，由使用方自行安装。
 
 ## 4. 其它运行时依赖
 

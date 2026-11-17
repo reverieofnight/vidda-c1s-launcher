@@ -53,8 +53,8 @@ adb devices → 192.168.2.19:5555   device
 
 ## 三、从 NAS 连接
 
-adb 客户端在 `local/platform-tools/`，包装脚本是 `tools/adb`（会把 `HOME`
-重定向到 `local/adbhome`，避免写系统目录被沙箱拒绝）。
+adb 客户端默认在 `~/dev-tools/platform-tools/`（项目里放 `local/platform-tools/` 则优先用它），
+包装脚本是 `tools/adb`（会把 `HOME` 重定向到 `local/adbhome`，避免写系统目录被沙箱拒绝）。
 
 > `local/` 是本地私有目录，整个不入库；里面的东西见 `local/README.md`。
 
@@ -113,7 +113,7 @@ build/
 
 local/                                 ← 本地私有目录（整目录不入库）
 ├── keystore.jks                       ← 签名密钥（务必保留，否则无法覆盖升级）
-├── toolchain/                         ← JDK 17 + build-tools + android.jar（约 633 MB）
+├── toolchain/                         ← （可选）JDK + build-tools + android.jar；默认在 ~/dev-tools
 └── settings-out/settings-entry.apk     ← 成品
 ```
 
@@ -122,7 +122,7 @@ local/                                 ← 本地私有目录（整目录不入�
 ```bash
 cd build
 export LANG=C.UTF-8 LC_ALL=C.UTF-8
-export JAVA_HOME="$PWD/../local/toolchain/jdk"; export PATH="$JAVA_HOME/bin:$PATH"
+export JAVA_HOME="$HOME/dev-tools/toolchain/jdk"; export PATH="$JAVA_HOME/bin:$PATH"
 sh build.sh
 ```
 

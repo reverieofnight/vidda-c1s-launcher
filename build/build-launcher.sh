@@ -3,8 +3,10 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
-LOCAL="$ROOT/../local"          # 工具链/产物/密钥：本地私有，不入库（见 .gitignore）
-TC="$LOCAL/toolchain"
+LOCAL="$ROOT/../local"          # 产物/密钥/素材：本地私有，不入库（见 .gitignore）
+DEVTOOLS="${DEVTOOLS:-$HOME/dev-tools}"   # 跨项目共享的工具链（见 ~/dev-tools/README.md）
+# 工具链优先用项目自带的 local/toolchain（可整包拷走），没有就退回机器级共享目录
+if [ -d "$LOCAL/toolchain" ]; then TC="$LOCAL/toolchain"; else TC="$DEVTOOLS/toolchain"; fi
 APP="$ROOT/launcher"
 OUT="$LOCAL/launcher-out"
 BT="$TC/bt"
