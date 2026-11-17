@@ -112,8 +112,6 @@ public class LauncherActivity extends Activity {
     private static final int COLUMNS = 7;
     private static final int DOCK_SHOW = 7;
     /** 4K 壁纸过渡演示：两张素材每 10 秒切一次，切换瞬间用 1080p 快照交叉淡化 */
-    private static final int[] FOUR_K_VIDEOS = {R.raw.test_4k, R.raw.test_4k_b};
-    private static final long FOUR_K_SWITCH_MS = 10_000L;
     /** UI 壁纸显示/隐藏的快速淡化时长 */
     private static final long REVEAL_FADE_MS = 250L;
     /** 转场结束、首帧上屏后，1080p UI 层交接给 4K 视频的渐隐时长 */
@@ -250,13 +248,9 @@ public class LauncherActivity extends Activity {
     private ImageView bgFront;
     private ImageView bgBack;
     private VideoView wallpaperVideo;
-    private boolean fourKVideoTest;
     private FrameLayout wallpaperTransitionLayer;
     private ImageView transitionOld;
     private ImageView transitionNew;
-    private boolean fourKTransitioning;
-    private boolean pendingFourKVideoStart;
-    private int fourKVideoIndex;
     private boolean reveal4KVideo = true;
     private Bitmap currentUiSnapshot;
     private Runnable pendingRevealRunnable;
@@ -647,7 +641,6 @@ public class LauncherActivity extends Activity {
         refreshClock();
         refreshDock();
         focusFirstDockItem();
-        handleFourKWallpaperIntent(getIntent());
         refresh4KStaticMode();
         if (getIntent() != null && getIntent().getBooleanExtra("wallpaper_manager", false)) {
             handler.postDelayed(new Runnable() {
@@ -804,7 +797,7 @@ public class LauncherActivity extends Activity {
     }
 
     private void refresh4KStaticMode() {
-        if (fourKVideoTest || wallpaperVideo == null) {
+        if (wallpaperVideo == null) {
             return;
         }
         if (!fourKStaticEnabled()) {
@@ -1415,10 +1408,7 @@ public class LauncherActivity extends Activity {
     }
 
     private void switchWallpaperBy(int direction) {
-        if (fourKVideoTest) {
-            switchFourKVideo(direction);
-            scheduleFourKSwitch();
-        } else if (fourKStaticEnabled()) {
+        if (fourKStaticEnabled()) {
             switch4KStatic(direction);
         } else {
             advanceBackground(direction);
@@ -3026,7 +3016,7 @@ public class LauncherActivity extends Activity {
         if (drawerFrostView == null) {
             return;
         }
-        if (fourKVideoTest || fourKStaticEnabled()) {
+        if (fourKStaticEnabled()) {
             drawerFrostView.setImageDrawable(null);
             return;
         }
@@ -3281,7 +3271,6 @@ public class LauncherActivity extends Activity {
             reloadApps();
             refresh4KStaticMode();
         }
-        handleFourKWallpaperIntent(getIntent());
         // 底栏默认聚焦第一项，左右键用来选择应用
         if (managerOpen) {
             refreshManager();
@@ -3289,372 +3278,6 @@ public class LauncherActivity extends Activity {
         } else {
             focusFirstDockItem();
         }
-    }
-
-    private void handleFourKWallpaperIntent(Intent intent) {
-        boolean enable = intent != null && intent.getBooleanExtra("fourk_video", false);
-        if (enable) {
-            startFourKVideoWallpaper();
-        } else {
-            stopFourKVideoWallpaper();
-        }
-    }
-
-    private final Runnable fourKSwitch = new Runnable() {
-        @Override
-        public void run() {
-            if (!fourKVideoTest) {
-                return;
-            }
-            switchFourKVideo(1);
-            handler.postDelayed(this, FOUR_K_SWITCH_MS);
-        }
-    };
-
-    private void startFourKVideoWallpaper() {
-        if (wallpaperVideo == null) {
-            return;
-        }
-        handler.removeCallbacks(bgTick);
-        handler.removeCallbacks(fourKSwitch);
-        pendingRevealRunnable = null;
-        bgFront.setVisibility(View.GONE);
-        bgBack.setVisibility(View.GONE);
-        wallpaperVideo.setVisibility(View.VISIBLE);
-        if (fourKVideoTest && wallpaperVideo.isPlaying()) {
-            if (reveal4KVideo) {
-                hideUiWallpaperImmediate();
-            } else if (wallpaperTransitionLayer.getVisibility() != View.VISIBLE) {
-                showUiWallpaperSteady();
-            }
-            scheduleFourKSwitch();
-            return;
-        }
-        fourKVideoTest = true;
-        play4KVideo(FOUR_K_VIDEOS[fourKVideoIndex], true);
-        if (reveal4KVideo) {
-            hideUiWallpaperImmediate();
-        } else {
-            showUiWallpaperSteady();
-        }
-        scheduleFourKSwitch();
-        Log.i(TAG, "4K video wallpaper test enabled, reveal=" + reveal4KVideo);
-    }
-
-    private void stopFourKVideoWallpaper() {
-        if (!fourKVideoTest || wallpaperVideo == null) {
-            return;
-        }
-        fourKVideoTest = false;
-        fourKTransitioning = false;
-        pendingFourKVideoStart = false;
-        pendingRevealRunnable = null;
-        handler.removeCallbacks(fourKSwitch);
-        if (transitionOld != null) {
-            transitionOld.animate().cancel();
-        }
-        if (transitionNew != null) {
-            transitionNew.animate().cancel();
-        }
-        if (wallpaperTransitionLayer != null) {
-            wallpaperTransitionLayer.animate().cancel();
-            wallpaperTransitionLayer.setVisibility(View.GONE);
-            wallpaperTransitionLayer.setAlpha(1f);
-        }
-        if (transitionOld != null) {
-            transitionOld.setImageDrawable(null);
-        }
-        if (transitionNew != null) {
-            transitionNew.setImageDrawable(null);
-        }
-        if (currentUiSnapshot != null) {
-            currentUiSnapshot.recycle();
-            currentUiSnapshot = null;
-        }
-        wallpaperVideo.stopPlayback();
-        wallpaperVideo.setVisibility(View.GONE);
-        bgFront.setVisibility(View.VISIBLE);
-        bgBack.setVisibility(View.VISIBLE);
-        fourKVideoIndex = 0;
-        reloadBackgrounds();
-        Log.i(TAG, "4K video wallpaper test disabled");
-    }
-
-    private void setReveal4KVideo(boolean enabled) {
-        if (reveal4KVideo == enabled) {
-            return;
-        }
-        reveal4KVideo = enabled;
-        pendingRevealRunnable = null;
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putBoolean(KEY_REVEAL_4K, enabled).apply();
-        Log.i(TAG, "reveal 4K video = " + enabled);
-        if (menuOpen && desktopModule != null) {
-            desktopModule.animate().cancel();
-            if (shouldFloatMenu()) {
-                desktopModule.animate().translationY(0f)
-                        .setDuration(MENU_ANIM_MS).setInterpolator(CLOSE_EASE).start();
-            } else {
-                desktopModule.animate().translationY(dp(MENU_HEIGHT_DP))
-                        .setDuration(MENU_ANIM_MS).setInterpolator(OPEN_EASE).start();
-            }
-        }
-        if (!fourKVideoTest || fourKTransitioning) {
-            return;
-        }
-        if (enabled) {
-            hideUiWallpaperQuick();
-        } else {
-            showUiWallpaperSteady();
-        }
-    }
-
-    /** 开关关闭时：UI 壁纸常驻，4K 视频层被黑色层盖住 */
-    private void showUiWallpaperSteady() {
-        if (!fourKVideoTest || wallpaperTransitionLayer == null) {
-            return;
-        }
-        Bitmap snapshot = grabVideoFrame(FOUR_K_VIDEOS[fourKVideoIndex],
-                Math.max(0L, wallpaperVideo.getCurrentPosition()) * 1000L);
-        if (snapshot == null) {
-            return;
-        }
-        Bitmap oldCurrent = currentUiSnapshot;
-        currentUiSnapshot = snapshot;
-        transitionOld.setImageDrawable(null);
-        transitionOld.setAlpha(0f);
-        transitionNew.setImageBitmap(snapshot);
-        transitionNew.setAlpha(1f);
-        wallpaperTransitionLayer.animate().cancel();
-        wallpaperTransitionLayer.setAlpha(0f);
-        wallpaperTransitionLayer.setVisibility(View.VISIBLE);
-        wallpaperTransitionLayer.animate().alpha(1f)
-                .setDuration(REVEAL_FADE_MS).start();
-        if (oldCurrent != null && oldCurrent != snapshot) {
-            oldCurrent.recycle();
-        }
-    }
-
-    /** 开关打开时：快速淡出 UI 壁纸，露出 4K 视频层 */
-    private void hideUiWallpaperQuick() {
-        if (wallpaperTransitionLayer == null
-                || wallpaperTransitionLayer.getVisibility() != View.VISIBLE) {
-            return;
-        }
-        wallpaperTransitionLayer.animate().cancel();
-        wallpaperTransitionLayer.animate().alpha(0f)
-                .setDuration(REVEAL_FADE_MS)
-                .withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        hideUiWallpaperImmediate();
-                        if (fourKVideoTest && wallpaperVideo != null
-                                && !wallpaperVideo.isPlaying()) {
-                            wallpaperVideo.start();
-                        }
-                    }
-                }).start();
-    }
-
-    private void hideUiWallpaperImmediate() {
-        if (wallpaperTransitionLayer == null) {
-            return;
-        }
-        wallpaperTransitionLayer.animate().cancel();
-        wallpaperTransitionLayer.setVisibility(View.GONE);
-        wallpaperTransitionLayer.setAlpha(1f);
-        transitionOld.setImageDrawable(null);
-        transitionNew.setImageDrawable(null);
-        if (currentUiSnapshot != null) {
-            currentUiSnapshot.recycle();
-            currentUiSnapshot = null;
-        }
-    }
-
-    private void scheduleFourKSwitch() {
-        handler.removeCallbacks(fourKSwitch);
-        handler.postDelayed(fourKSwitch, FOUR_K_SWITCH_MS);
-    }
-
-    private void play4KVideo(int resId, boolean autoStart) {
-        pendingFourKVideoStart = false;
-        wallpaperVideo.setVideoURI(fourKVideoUri(resId));
-        wallpaperVideo.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            @Override
-            public void onPrepared(MediaPlayer mp) {
-                mp.setLooping(true);
-                mp.setVolume(0f, 0f);
-                Log.i(TAG, "4K wallpaper video prepared size="
-                        + mp.getVideoWidth() + "x" + mp.getVideoHeight());
-                if (!fourKVideoTest) {
-                    return;
-                }
-                if (pendingRevealRunnable != null) {
-                    // 启动视频后给 4K plane 1s 稳定时间，再渐隐 UI 层
-                    wallpaperVideo.start();
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            runPendingReveal();
-                        }
-                    }, FRAME_SETTLE_MS);
-                } else if (fourKTransitioning) {
-                    pendingFourKVideoStart = true;
-                } else {
-                    wallpaperVideo.start();
-                }
-            }
-        });
-        wallpaperVideo.setOnInfoListener(new MediaPlayer.OnInfoListener() {
-            @Override
-            public boolean onInfo(MediaPlayer mp, int what, int extra) {
-                if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                    Log.i(TAG, "4K video rendering start");
-                }
-                return false;
-            }
-        });
-    }
-
-    private void runPendingReveal() {
-        Runnable reveal = pendingRevealRunnable;
-        pendingRevealRunnable = null;
-        if (reveal != null) {
-            reveal.run();
-        }
-    }
-
-    private Uri fourKVideoUri(int resId) {
-        return Uri.parse("android.resource://" + getPackageName() + "/" + resId);
-    }
-
-    /** 方案 2：抓旧/新各一帧 1080p 快照，交叉淡化 1.2s，结束后新 4K 视频从第一帧开始 */
-    private void switchFourKVideo(int direction) {
-        if (!fourKVideoTest || fourKTransitioning || wallpaperVideo == null) {
-            return;
-        }
-        final int next = (fourKVideoIndex + direction + FOUR_K_VIDEOS.length)
-                % FOUR_K_VIDEOS.length;
-        long oldPosition = Math.max(0L, wallpaperVideo.getCurrentPosition());
-        final Bitmap oldSnapshot = grabVideoFrame(FOUR_K_VIDEOS[fourKVideoIndex],
-                oldPosition * 1000L);
-        final Bitmap newSnapshot = grabVideoFrame(FOUR_K_VIDEOS[next], 0L);
-        if (oldSnapshot == null || newSnapshot == null) {
-            Log.w(TAG, "4K snapshot failed, fallback cut");
-            fourKVideoIndex = next;
-            play4KVideo(FOUR_K_VIDEOS[next], true);
-            if (reveal4KVideo) {
-                hideUiWallpaperImmediate();
-            } else {
-                showUiWallpaperSteady();
-            }
-            return;
-        }
-
-        fourKTransitioning = true;
-        pendingFourKVideoStart = false;
-        transitionOld.setImageBitmap(oldSnapshot);
-        transitionNew.setImageBitmap(newSnapshot);
-        transitionOld.setAlpha(1f);
-        transitionNew.setAlpha(0f);
-        wallpaperTransitionLayer.animate().cancel();
-        wallpaperTransitionLayer.setAlpha(1f);
-        wallpaperTransitionLayer.setVisibility(View.VISIBLE);
-        fourKVideoIndex = next;
-
-        Bitmap stale = currentUiSnapshot;
-        currentUiSnapshot = null;
-        if (stale != null && stale != oldSnapshot && stale != newSnapshot) {
-            stale.recycle();
-        }
-
-        transitionOld.animate().alpha(0f).setDuration(BG_FADE_MS).start();
-        transitionNew.animate().alpha(1f).setDuration(BG_FADE_MS)
-                .withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        fourKTransitioning = false;
-                        if (!fourKVideoTest) {
-                            wallpaperTransitionLayer.setVisibility(View.GONE);
-                            transitionOld.setImageDrawable(null);
-                            transitionNew.setImageDrawable(null);
-                            oldSnapshot.recycle();
-                            newSnapshot.recycle();
-                            return;
-                        }
-                        if (reveal4KVideo) {
-                            // 交叉淡化结束后才切新视频；UI 层仍覆盖，避免旧视频先断造成黑屏
-                            pendingRevealRunnable = new Runnable() {
-                                @Override
-                                public void run() {
-                                    wallpaperTransitionLayer.postDelayed(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            wallpaperTransitionLayer.animate().alpha(0f)
-                                                    .setDuration(TRANSITION_REVEAL_MS)
-                                                    .withEndAction(new Runnable() {
-                                                        @Override
-                                                        public void run() {
-                                                            hideUiWallpaperImmediate();
-                                                            oldSnapshot.recycle();
-                                                            newSnapshot.recycle();
-                                                        }
-                                                    }).start();
-                                        }
-                                    }, 100);
-                                }
-                            };
-                            play4KVideo(FOUR_K_VIDEOS[next], false);
-                        } else {
-                            // 开关关闭：保留 UI 壁纸，新视频在黑色 UI 层下面播放
-                            transitionOld.setImageDrawable(null);
-                            transitionOld.setAlpha(0f);
-                            transitionNew.setAlpha(1f);
-                            currentUiSnapshot = newSnapshot;
-                            oldSnapshot.recycle();
-                            play4KVideo(FOUR_K_VIDEOS[next], true);
-                        }
-                    }
-                }).start();
-        Log.i(TAG, "4K wallpaper crossfade start -> " + next
-                + " reveal=" + reveal4KVideo);
-    }
-
-    private Bitmap grabVideoFrame(int resId, long timeUs) {
-        Bitmap frame = null;
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            AssetFileDescriptor afd = getResources().openRawResourceFd(resId);
-            if (afd != null) {
-                retriever.setDataSource(afd.getFileDescriptor(),
-                        afd.getStartOffset(), afd.getLength());
-                afd.close();
-            } else {
-                retriever.setDataSource(this, fourKVideoUri(resId));
-            }
-            frame = retriever.getFrameAtTime(timeUs,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-        } catch (Throwable t) {
-            Log.w(TAG, "grab 4K frame failed, fallback snapshot", t);
-        } finally {
-            try {
-                retriever.release();
-            } catch (Throwable ignored) {
-            }
-        }
-        if (frame == null) {
-            return null;
-        }
-        int sw = getResources().getDisplayMetrics().widthPixels;
-        int sh = getResources().getDisplayMetrics().heightPixels;
-        if (frame.getWidth() == sw && frame.getHeight() == sh) {
-            return frame;
-        }
-        Bitmap scaled = Bitmap.createScaledBitmap(frame, sw, sh, true);
-        if (scaled != frame) {
-            frame.recycle();
-        }
-        return scaled;
     }
 
     @Override
@@ -3667,7 +3290,6 @@ public class LauncherActivity extends Activity {
         reload4KBackgrounds();
         reloadApps();
         focusFirstDockItem();
-        handleFourKWallpaperIntent(intent);
         refresh4KStaticMode();
         if (intent != null && intent.getBooleanExtra("wallpaper_manager", false)) {
             openWallpaperManager();
@@ -3710,7 +3332,6 @@ public class LauncherActivity extends Activity {
         handler.removeCallbacks(clockTick);
         handler.removeCallbacks(weatherTick);
         handler.removeCallbacks(bgTick);
-        handler.removeCallbacks(fourKSwitch);
         if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
             wallpaperVideo.pause();
         }
@@ -3796,7 +3417,7 @@ public class LauncherActivity extends Activity {
 
     /** 4K 视频层真正露出来时菜单悬浮；否则（UI 壁纸/4K 关闭）沿用桌面下压 */
     private boolean shouldFloatMenu() {
-        return fourKStaticEnabled() || (fourKVideoTest && reveal4KVideo);
+        return fourKStaticEnabled();
     }
 
     private void openMenu() {
