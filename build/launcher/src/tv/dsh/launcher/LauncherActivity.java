@@ -387,6 +387,11 @@ public class LauncherActivity extends Activity {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
                 Log.i(TAG, "video surface created");
+                if (pendingVideoFile != null && !videoWallpaperMode) {
+                    // 已经切回静态壁纸了，别再补播这个待播视频
+                    Log.i(TAG, "video surface ready, drop pending " + pendingVideoFile.getName());
+                    pendingVideoFile = null;
+                }
                 if (pendingVideoFile != null) {
                     File pending = pendingVideoFile;
                     pendingVideoFile = null;
@@ -919,6 +924,8 @@ public class LauncherActivity extends Activity {
                     Log.i(TAG, "video wallpaper rendering start");
                     videoWallpaperReady = true;
                     videoRetryCount = 0;
+                    wallpaperVideo.setVisibility(View.VISIBLE);
+                    hideVideoCover();
                     bgFront.setVisibility(View.GONE);
                     bgBack.setVisibility(View.GONE);
                     handler.postDelayed(new Runnable() {
@@ -949,9 +956,11 @@ public class LauncherActivity extends Activity {
                 return true;
             }
         });
+        // 视频层必须可见，否则 surface 建不起来、prepare 完也拿不到帧；
+        // 空 surface 是黑的，所以在它上面先盖一层当前壁纸，等首帧渲染再撤。
+        showVideoCover();
         wallpaperVideo.setVisibility(View.VISIBLE);
         playingVideoPath = file.getAbsolutePath();
-        wallpaperVideo.setVisibility(View.VISIBLE);
         SurfaceHolder holder = wallpaperVideo.getHolder();
         if (holder.getSurface() == null || !holder.getSurface().isValid()) {
             // 没有输出目标时 setVideoPath 会 prepare 成功但永远不出帧（黑屏），
@@ -967,6 +976,7 @@ public class LauncherActivity extends Activity {
     private void stopVideoWallpaper() {
         videoWallpaperReady = false;
         playingVideoPath = null;
+        pendingVideoFile = null;
         videoPlayToken++;
         videoPlayerRef = null;
         handler.removeCallbacks(videoEndGuard);
@@ -1531,6 +1541,65 @@ public class LauncherActivity extends Activity {
         Log.i(TAG, "4K static play " + file.getName());
         wallpaperVideo.setVisibility(View.VISIBLE);
         wallpaperVideo.setVideoPath(file.getAbsolutePath());
+    }
+
+    /** 视频层在准备期间是空的黑 surface，用当前静态壁纸铺一层封面挡住 */
+    private void showVideoCover() {
+        if (wallpaperTransitionLayer == null || transitionNew == null) {
+            return;
+        }
+        if (wallpaperTransitionLayer.getVisibility() == View.VISIBLE
+                && transitionNew.getDrawable() != null) {
+            return;
+        }
+        Bitmap cover = currentImageCoverBitmap();
+        if (cover == null) {
+            return;
+        }
+        if (transitionOld != null) {
+            transitionOld.setImageDrawable(null);
+        }
+        transitionNew.setImageBitmap(cover);
+        transitionNew.setAlpha(1f);
+        wallpaperTransitionLayer.setAlpha(1f);
+        wallpaperTransitionLayer.setVisibility(View.VISIBLE);
+        Log.i(TAG, "video cover shown");
+    }
+
+    private void hideVideoCover() {
+        if (wallpaperTransitionLayer == null || transitionNew == null) {
+            return;
+        }
+        if (transitionNew.getDrawable() == null) {
+            return;
+        }
+        wallpaperTransitionLayer.setVisibility(View.GONE);
+        transitionOld.setImageDrawable(null);
+        transitionNew.setImageDrawable(null);
+        Log.i(TAG, "video cover hidden");
+    }
+
+    /** 当前正在展示的静态壁纸位图（4K 图优先），失败返回 null */
+    private Bitmap currentImageCoverBitmap() {
+        try {
+            if (!fourKItems.isEmpty()) {
+                int idx = Math.max(fourKIndex, 0);
+                if (idx < fourKItems.size()) {
+                    BackgroundItem item = fourKItems.get(idx);
+                    Bitmap bitmap = item.filePath != null ? loadFile(item.filePath) : null;
+                    if (bitmap != null) {
+                        return bitmap;
+                    }
+                }
+            }
+            if (!backgroundItems.isEmpty()) {
+                int idx = Math.max(backgroundIndex, 0) % backgroundItems.size();
+                return loadBackground(backgroundItems.get(idx));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "cover bitmap failed", t);
+        }
+        return null;
     }
 
     private void maybeHide4KUiCover() {
@@ -2277,6 +2346,13 @@ public class LauncherActivity extends Activity {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
         focusFirstDockItem();
+        // 管理页关闭时，如果当前是动态壁纸就重新起一遍播放器：
+        // 管理页期间视频层的 surface 可能被销毁重建，旧播放器会往废弃的 surface 送帧，
+        // 回到桌面只剩一块黑 surface（用户反馈的「返回桌面黑屏」）。
+        if (videoWallpaperMode) {
+            Log.i(TAG, "manager closed, re-prepare video wallpaper");
+            refreshVideoWallpaperMode();
+        }
     }
 
     // ---------- 远程导入（局域网 HTTP 上传） ----------
