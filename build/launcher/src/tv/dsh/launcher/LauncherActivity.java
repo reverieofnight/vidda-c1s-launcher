@@ -32,6 +32,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.renderscript.Allocation;
 import android.renderscript.Element;
 import android.renderscript.RenderScript;
@@ -45,6 +46,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
+import android.view.WindowManager;
 import android.view.animation.PathInterpolator;
 import android.widget.AbsListView;
 import android.widget.AdapterView;
@@ -67,8 +69,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.ArrayList;import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -78,6 +79,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 
 import org.json.JSONObject;
 
@@ -284,6 +292,14 @@ public class LauncherActivity extends Activity {
     private boolean managerOpen;
     /** 缩略图缓存：key = 文件名|stamp */
     private final Map<String, Bitmap> thumbnailCache = new HashMap<>();
+
+    /** 远程导入页（局域网 HTTP 上传，全屏浮层，盖在管理页上面） */
+    private FrameLayout remoteModule;
+    private TextView remoteUrlView;
+    private TextView remoteStatusView;
+    private TextView remoteBackButton;
+    private RemoteImportServer remoteServer;
+    private boolean remoteOpen;
 
     private final Handler handler = new Handler();
     private boolean drawerOpen;
@@ -596,6 +612,10 @@ public class LauncherActivity extends Activity {
         buildWallpaperManager();
         root.addView(managerModule, matchParent());
 
+        // 远程导入页：局域网 HTTP 上传，盖在管理页上面
+        buildRemoteImportPage();
+        root.addView(remoteModule, matchParent());
+
         startupBlackout = new View(this);
         startupBlackout.setBackgroundColor(Color.BLACK);
         startupBlackout.setClickable(false);
@@ -633,6 +653,9 @@ public class LauncherActivity extends Activity {
                 @Override
                 public void run() {
                     openWallpaperManager();
+                    if (getIntent().getBooleanExtra("remote_import", false)) {
+                        openRemoteImport();
+                    }
                 }
             }, 1200);
         }
@@ -1546,6 +1569,12 @@ public class LauncherActivity extends Activity {
                 confirmClearAllCache();
             }
         }));
+        actions.addView(makeManagerButton("远程导入", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openRemoteImport();
+            }
+        }));
         actions.addView(makeManagerButton("关闭", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1639,6 +1668,367 @@ public class LauncherActivity extends Activity {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
         focusFirstDockItem();
+    }
+
+    // ---------- 远程导入（局域网 HTTP 上传） ----------
+
+    private void buildRemoteImportPage() {
+        remoteModule = new FrameLayout(this);
+        remoteModule.setBackgroundColor(0xFF0B1017);
+        remoteModule.setVisibility(View.GONE);
+        remoteModule.setClickable(true);
+
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setGravity(Gravity.CENTER_HORIZONTAL);
+        column.setPadding(dp(64), dp(56), dp(64), dp(44));
+        remoteModule.addView(column, matchParent());
+
+        TextView title = new TextView(this);
+        title.setText("远程导入");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER);
+        column.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView hint = new TextView(this);
+        hint.setText("同一 WiFi 下用电脑或手机浏览器打开下面的地址，即可上传、切换、删除壁纸。\n"
+                + "上传后需要点「设为当前」才会换画面；离开本页会自动关闭服务。");
+        hint.setTextColor(0xFFB8C4D2);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        hint.setGravity(Gravity.CENTER);
+        hint.setLineSpacing(dp(8), 1f);
+        hint.setPadding(0, dp(12), 0, dp(26));
+        column.addView(hint, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        remoteUrlView = new TextView(this);
+        remoteUrlView.setText("正在启动…");
+        remoteUrlView.setTextColor(0xFF4C8DFF);
+        remoteUrlView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 38);
+        remoteUrlView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        remoteUrlView.setGravity(Gravity.CENTER);
+        remoteUrlView.setPadding(dp(30), dp(18), dp(30), dp(18));
+        remoteUrlView.setBackgroundColor(0xFF131B26);
+        column.addView(remoteUrlView);
+
+        remoteStatusView = new TextView(this);
+        remoteStatusView.setText("等待连接…");
+        remoteStatusView.setTextColor(0xFF7F8FA3);
+        remoteStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        remoteStatusView.setGravity(Gravity.CENTER);
+        remoteStatusView.setPadding(0, dp(18), 0, 0);
+        column.addView(remoteStatusView);
+
+        View spacer = new View(this);
+        column.addView(spacer, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER);
+        remoteBackButton = makeManagerButton("返回", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeRemoteImport();
+            }
+        });
+        actions.addView(remoteBackButton);
+        column.addView(actions);
+    }
+
+    private void openRemoteImport() {
+        if (remoteModule == null || remoteOpen) {
+            return;
+        }
+        remoteOpen = true;
+        remoteModule.setVisibility(View.VISIBLE);
+        remoteModule.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        // 远程页在最上层，必须挡住管理页/桌面的焦点，否则遥控器会点到下面的网格
+        if (managerModule != null) {
+            managerModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        }
+        if (desktopModule != null) {
+            desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        }
+        if (menuModule != null) {
+            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (remoteServer == null) {
+            remoteServer = new RemoteImportServer(new RemoteHost());
+            remoteServer.setAssetOpener(new RemoteImportServer.AssetOpener() {
+                @Override
+                public InputStream open(String assetName) throws IOException {
+                    return getAssets().open(assetName);
+                }
+            });
+        }
+        if (remoteServer.start(8080)) {
+            String ip = localIpv4();
+            String url = "http://" + (ip == null ? "127.0.0.1" : ip)
+                    + ":" + remoteServer.getPort() + "/";
+            remoteUrlView.setText(url);
+            remoteStatusView.setText(ip == null
+                    ? "没有检测到局域网地址，请确认电视已连接网络"
+                    : "等待浏览器连接…");
+            Log.i(TAG, "remote import opened: " + url);
+        } else {
+            remoteUrlView.setText("启动失败");
+            remoteStatusView.setText("端口 8080-8089 都被占用，请重试");
+            Log.w(TAG, "remote import server start failed");
+        }
+        if (remoteBackButton != null) {
+            remoteBackButton.post(new Runnable() {
+                @Override
+                public void run() {
+                    remoteBackButton.requestFocus();
+                }
+            });
+        }
+    }
+
+    private void closeRemoteImport() {
+        if (!remoteOpen) {
+            return;
+        }
+        remoteOpen = false;
+        if (remoteServer != null) {
+            remoteServer.stop();
+        }
+        if (remoteModule != null) {
+            remoteModule.setVisibility(View.GONE);
+        }
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        Log.i(TAG, "remote import closed");
+        if (managerOpen) {
+            if (managerModule != null) {
+                managerModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+            }
+            if (managerGrid != null) {
+                managerGrid.requestFocus();
+            }
+        } else {
+            if (desktopModule != null) {
+                desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+            }
+            focusFirstDockItem();
+        }
+    }
+
+    /** 取第一个非回环 IPv4，优先 wlan/eth 网卡 */
+    private String localIpv4() {
+        String fallback = null;
+        try {
+            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!ni.isUp() || ni.isLoopback()) {
+                    continue;
+                }
+                String name = ni.getName() == null ? "" : ni.getName().toLowerCase(Locale.US);
+                for (InetAddress addr : Collections.list(ni.getInetAddresses())) {
+                    if (!(addr instanceof Inet4Address) || addr.isLoopbackAddress()) {
+                        continue;
+                    }
+                    String ip = addr.getHostAddress();
+                    if (name.startsWith("wlan") || name.startsWith("eth")) {
+                        return ip;
+                    }
+                    if (fallback == null) {
+                        fallback = ip;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return fallback;
+    }
+
+    private final class RemoteHost implements RemoteImportServer.Host {
+        @Override
+        public List<String> wallpaperNames() {
+            List<String> names = callOnUi(new Callable<List<String>>() {
+                @Override
+                public List<String> call() {
+                    List<String> out = new ArrayList<>(fourKItems.size());
+                    for (BackgroundItem item : fourKItems) {
+                        out.add(item.name);
+                    }
+                    return out;
+                }
+            }, 3000);
+            return names == null ? new ArrayList<String>() : names;
+        }
+
+        @Override
+        public String currentWallpaper() {
+            return current4KName;
+        }
+
+        @Override
+        public File wallpaperDir() {
+            File base = getExternalFilesDir(null) != null
+                    ? getExternalFilesDir(null) : getFilesDir();
+            return new File(base, FOUR_K_BG_DIR);
+        }
+
+        @Override
+        public synchronized String saveWallpaper(String fileName, InputStream in, long length)
+                throws IOException {
+            File dir = wallpaperDir();
+            if (!dir.exists() && !dir.mkdirs()) {
+                return null;
+            }
+            File temp = new File(dir, ".upload-" + System.currentTimeMillis() + ".tmp");
+            long written = 0;
+            OutputStream out = null;
+            try {
+                out = new FileOutputStream(temp);
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                    written += read;
+                }
+                out.flush();
+            } finally {
+                if (out != null) {
+                    out.close();
+                }
+            }
+            if (written != length) {
+                temp.delete();
+                Log.w(TAG, "remote upload incomplete: " + written + "/" + length);
+                return null;
+            }
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(temp.getAbsolutePath(), bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                temp.delete();
+                Log.w(TAG, "remote upload not an image: " + fileName);
+                return null;
+            }
+            String base = fileName;
+            String ext = ".jpg";
+            int dot = fileName.lastIndexOf('.');
+            if (dot > 0) {
+                base = fileName.substring(0, dot);
+                ext = fileName.substring(dot);
+            }
+            File dest = new File(dir, base + ext);
+            int suffix = 1;
+            while (dest.exists()) {
+                suffix++;
+                dest = new File(dir, base + "_" + suffix + ext);
+            }
+            if (!temp.renameTo(dest)) {
+                temp.delete();
+                return null;
+            }
+            final String saved = dest.getName();
+            final int width = bounds.outWidth;
+            final int height = bounds.outHeight;
+            Log.i(TAG, "remote upload stored: " + saved + " (" + width + "x" + height + ")");
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    boolean wasEmpty = fourKItems.isEmpty();
+                    reloadBackgrounds();
+                    reload4KBackgrounds();
+                    refreshManager();
+                    if (wasEmpty) {
+                        applyWallpaperByName(saved);
+                    }
+                    if (!remoteOpen) {
+                        Toast.makeText(LauncherActivity.this,
+                                "已收到壁纸 " + saved, Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+            return saved;
+        }
+
+        @Override
+        public boolean applyWallpaper(final String name) {
+            Boolean ok = callOnUi(new Callable<Boolean>() {
+                @Override
+                public Boolean call() {
+                    for (BackgroundItem item : fourKItems) {
+                        if (item.name.equals(name)) {
+                            applyWallpaperByName(name);
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }, 5000);
+            return ok != null && ok;
+        }
+
+        @Override
+        public boolean deleteWallpaper(final String name) {
+            Boolean ok = callOnUi(new Callable<Boolean>() {
+                @Override
+                public Boolean call() {
+                    for (BackgroundItem item : fourKItems) {
+                        if (item.name.equals(name)) {
+                            LauncherActivity.this.deleteWallpaper(item);
+                            return !new File(item.filePath).exists();
+                        }
+                    }
+                    return false;
+                }
+            }, 5000);
+            return ok != null && ok;
+        }
+
+        @Override
+        public void onRemoteEvent(final String message) {
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (remoteStatusView != null) {
+                        remoteStatusView.setText(message);
+                    }
+                }
+            });
+        }
+    }
+
+    /** 把任务丢到主线程执行并等结果；已经在主线程则直接执行 */
+    private <T> T callOnUi(final Callable<T> task, long timeoutMs) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            try {
+                return task.call();
+            } catch (Exception e) {
+                Log.w(TAG, "ui task failed", e);
+                return null;
+            }
+        }
+        final Object[] holder = new Object[1];
+        final CountDownLatch latch = new CountDownLatch(1);
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    holder[0] = task.call();
+                } catch (Exception e) {
+                    Log.w(TAG, "ui task failed", e);
+                } finally {
+                    latch.countDown();
+                }
+            }
+        });
+        try {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        @SuppressWarnings("unchecked")
+        T result = (T) holder[0];
+        return result;
     }
 
     /** 网格有焦点时才给选中项画白框，避免和底部按钮的焦点框同时出现 */
@@ -3239,6 +3629,9 @@ public class LauncherActivity extends Activity {
         refresh4KStaticMode();
         if (intent != null && intent.getBooleanExtra("wallpaper_manager", false)) {
             openWallpaperManager();
+            if (intent.getBooleanExtra("remote_import", false)) {
+                openRemoteImport();
+            }
         }
     }
 
@@ -3285,6 +3678,10 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (remoteServer != null) {
+            remoteServer.stop();
+            remoteServer = null;
+        }
         stop4KStatic();
     }
 
@@ -3334,6 +3731,10 @@ public class LauncherActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (remoteOpen) {
+            closeRemoteImport();
+            return;
+        }
         if (managerOpen) {
             closeWallpaperManager();
             return;

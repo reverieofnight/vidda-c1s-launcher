@@ -33,6 +33,12 @@ for f in "$BG_SRC"/*.jpg "$BG_SRC"/*.jpeg "$BG_SRC"/*.png; do
 done
 echo "    背景图 $bg_count 张 → assets/backgrounds"
 
+# 远程导入页（局域网 HTTP 上传）的静态页面
+mkdir -p "$ASSETS/www"
+if [ -d "$APP/www" ]; then
+  cp "$APP/www/"*.html "$ASSETS/www/" 2>/dev/null || true
+fi
+
 echo "[2/7] aapt2 compile"
 "$BT/aapt2" compile --dir "$APP/res" -o "$OUT/res.zip"
 
@@ -60,7 +66,10 @@ echo "[4/7] javac"
   "$OUT/gen/tv/dsh/launcher/R.java" \
   "$APP/src/tv/dsh/launcher/LauncherActivity.java" \
   "$APP/src/tv/dsh/launcher/BootReceiver.java" \
-  "$APP/src/tv/dsh/launcher/BootAccessibilityService.java" 2>&1 | grep -v 'bootstrap class path' || true
+  "$APP/src/tv/dsh/launcher/BootAccessibilityService.java" \
+  "$APP/src/tv/dsh/launcher/RemoteImportServer.java" > "$OUT/javac.log" 2>&1 \
+  || { cat "$OUT/javac.log"; echo "javac 失败"; exit 1; }
+grep -v 'bootstrap class path' "$OUT/javac.log" || true
 
 echo "[5/7] d8"
 "$BT/d8" --lib "$AJAR" --min-api 28 --output "$OUT/dex" \
