@@ -3,7 +3,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 SRC=${1:-local/背景图}
-DEST=/sdcard/Android/data/tv.dsh.launcher/files/backgrounds_4k
+DEST=/sdcard/Android/data/cn.rainynight.dream/files/backgrounds_4k
 [ -d "$SRC" ] || { echo "源目录不存在: $SRC" >&2; exit 1; }
 ./tools/adb shell "mkdir -p $DEST"
 count=0

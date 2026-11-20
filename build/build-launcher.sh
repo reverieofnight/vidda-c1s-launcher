@@ -65,12 +65,12 @@ echo "[4/7] javac"
 "$JDK/bin/javac" -source 8 -target 8 -nowarn \
   -bootclasspath "$AJAR" -classpath "$AJAR" \
   -d "$OUT/obj" \
-  "$OUT/gen/tv/dsh/launcher/R.java" \
-  "$APP/src/tv/dsh/launcher/LauncherActivity.java" \
-  "$APP/src/tv/dsh/launcher/BootReceiver.java" \
-  "$APP/src/tv/dsh/launcher/BootAccessibilityService.java" \
-  "$APP/src/tv/dsh/launcher/RemoteImportServer.java" \
-  "$APP/src/tv/dsh/launcher/QrCode.java" > "$OUT/javac.log" 2>&1 \
+  "$OUT/gen/cn/rainynight/dream/R.java" \
+  "$APP/src/cn/rainynight/dream/LauncherActivity.java" \
+  "$APP/src/cn/rainynight/dream/BootReceiver.java" \
+  "$APP/src/cn/rainynight/dream/BootAccessibilityService.java" \
+  "$APP/src/cn/rainynight/dream/RemoteImportServer.java" \
+  "$APP/src/cn/rainynight/dream/QrCode.java" > "$OUT/javac.log" 2>&1 \
   || { cat "$OUT/javac.log"; echo "javac 失败"; exit 1; }
 grep -v 'bootstrap class path' "$OUT/javac.log" || true
 

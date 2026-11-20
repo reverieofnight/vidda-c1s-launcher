@@ -1,4 +1,4 @@
-package tv.dsh.launcher;
+package cn.rainynight.dream;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -18,6 +18,7 @@ import android.graphics.Color;
 import android.graphics.ImageFormat;
 import android.graphics.YuvImage;
 import android.graphics.Paint;
+import android.graphics.Outline;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -25,6 +26,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.media.Image;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
@@ -51,6 +53,7 @@ import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.view.ViewOutlineProvider;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.view.animation.PathInterpolator;
@@ -3090,7 +3093,8 @@ public class LauncherActivity extends Activity {
         // 两个 tab 拼成一个整块（无间隙的分段控件）
         managerTabGroup = new LinearLayout(this);
         managerTabGroup.setOrientation(LinearLayout.HORIZONTAL);
-        managerTabGroup.setBackgroundColor(0xFF141C27);
+        // 圆形只由两个 tab 自己负责，整组背景保持透明，避免圆角外露出直角底色
+        managerTabGroup.setBackgroundColor(Color.TRANSPARENT);
         managerTabImage = makeManagerTab("静态壁纸", MANAGER_IMAGES);
         managerTabVideo = makeManagerTab("动态壁纸", MANAGER_VIDEOS);
         managerTabGroup.addView(managerTabImage);
@@ -4593,7 +4597,7 @@ public class LauncherActivity extends Activity {
         for (int i = 0; i < managerGrid.getChildCount(); i++) {
             boolean ring = focused && (first + i) == selected;
             managerGrid.getChildAt(i).setBackgroundResource(
-                    ring ? R.drawable.dock_focus : R.drawable.tile_bg);
+                    ring ? R.drawable.manager_item_focus : R.drawable.tile_bg);
         }
     }
 
@@ -4842,11 +4846,28 @@ public class LauncherActivity extends Activity {
     /** 选中态用底色，焦点态用焦点框；两者同时存在时焦点框优先，避免切栏后焦点样式被刷掉。 */
     private void applyManagerTabVisual(TextView tab, boolean selected) {
         tab.setTextColor(selected ? Color.WHITE : 0xFF8FA0B3);
+        boolean left = tab == managerTabImage;
         if (tab.hasFocus()) {
-            tab.setBackgroundResource(R.drawable.dock_focus);
+            tab.setBackground(makeManagerTabBackground(0x7AB8D8F2, left));
         } else {
-            tab.setBackgroundColor(selected ? 0xFF1E2A38 : 0xFF141C27);
+            tab.setBackground(makeManagerTabBackground(
+                    selected ? 0xFF1E2A38 : 0xFF141C27, left));
         }
+    }
+
+    /**
+     * 分段控件单个 tab 的背景：左侧 tab 只圆左上/左下，右侧 tab 只圆右上/右下，
+     * 中间拼缝保持直角；选中和焦点态复用同一套圆角。
+     */
+    private GradientDrawable makeManagerTabBackground(int fillColor, boolean left) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setColor(fillColor);
+        float r = dp(6);
+        bg.setCornerRadii(left
+                ? new float[]{r, r, 0, 0, 0, 0, r, r}
+                : new float[]{0, 0, r, r, r, r, 0, 0});
+        return bg;
     }
 
     private TextView makeManagerTab(final String label, final int type) {
@@ -4855,18 +4876,13 @@ public class LauncherActivity extends Activity {
         tab.setTextColor(0xFF8FA0B3);
         tab.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         tab.setGravity(Gravity.CENTER);
-        tab.setBackgroundColor(0xFF141C27);
+        tab.setBackground(makeManagerTabBackground(0xFF141C27, type == MANAGER_IMAGES));
         tab.setFocusable(true);
         tab.setFocusableInTouchMode(true);
         tab.setPadding(dp(18), 0, dp(18), 0);
         tab.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
-                if (hasFocus) {
-                    v.setBackgroundResource(R.drawable.dock_focus);
-                } else {
-                    v.setBackgroundColor(managerType == type ? 0xFF1E2A38 : 0xFF141C27);
-                }
                 updateManagerTabs();
             }
         });
@@ -4967,6 +4983,15 @@ public class LauncherActivity extends Activity {
     }
 
     private final class WallpaperAdapter extends BaseAdapter {
+
+        /** 壁纸卡片圆角：缩略图、底部文件名浮层和聚焦描边一起裁成圆角 */
+        private final ViewOutlineProvider tileOutline = new ViewOutlineProvider() {
+            @Override
+            public void getOutline(View view, Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), dp(8));
+            }
+        };
+
         @Override
         public int getCount() {
             return activeManagerPageItems().size();
@@ -4994,11 +5019,19 @@ public class LauncherActivity extends Activity {
 
             FrameLayout tile = new FrameLayout(LauncherActivity.this);
             tile.setPadding(dp(3), dp(3), dp(3), dp(3));
-            tile.setBackgroundResource(selected ? R.drawable.dock_focus : R.drawable.tile_bg);
+            tile.setClipToOutline(true);
+            tile.setOutlineProvider(tileOutline);
+            tile.setBackgroundResource(selected ? R.drawable.manager_item_focus : R.drawable.tile_bg);
 
             ImageView image = new ImageView(LauncherActivity.this);
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            image.setBackgroundColor(0xFF1A2430);
+            // 图片自身也按圆角裁切：父容器的 clipToOutline 只裁到了背景描边，
+            // 图片内容仍是直角，这里用背景 Outline + clipToOutline 把位图裁圆。
+            GradientDrawable thumbBg = new GradientDrawable();
+            thumbBg.setColor(0xFF1A2430);
+            thumbBg.setCornerRadius(dp(5));
+            image.setBackground(thumbBg);
+            image.setClipToOutline(true);
             tile.addView(image, matchParent());
             loadThumbnail(image, item);
 
@@ -5008,7 +5041,13 @@ public class LauncherActivity extends Activity {
             label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
             label.setSingleLine(true);
             label.setEllipsize(TextUtils.TruncateAt.END);
-            label.setBackgroundColor(0xB3000000);
+            // 底部文件名浮层只圆下面两个角，避免盖住卡片的圆角
+            GradientDrawable labelBg = new GradientDrawable();
+            labelBg.setColor(0xB3000000);
+            float labelRadius = dp(5);
+            labelBg.setCornerRadii(new float[]{
+                    0, 0, 0, 0, labelRadius, labelRadius, labelRadius, labelRadius});
+            label.setBackground(labelBg);
             label.setPadding(dp(8), dp(3), dp(8), dp(3));
             FrameLayout.LayoutParams labelLp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(26), Gravity.BOTTOM);
@@ -6316,7 +6355,7 @@ public class LauncherActivity extends Activity {
     };
 
     /**
-     * 优先读设备外部目录（/sdcard/Android/data/tv.dsh.launcher/files/backgrounds），
+     * 优先读设备外部目录（/sdcard/Android/data/cn.rainynight.dream/files/backgrounds），
      * 目录里没有图片时才回退到构建时打进 APK 的 assets。
      */
     private void reloadBackgrounds() {

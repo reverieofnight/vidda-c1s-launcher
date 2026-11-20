@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="tv.dsh.launcher"
-    android:versionCode="2"
-    android:versionName="0.2">
+    package="cn.rainynight.dream"
+    android:versionCode="1"
+    android:versionName="1.0.0">
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -48,7 +48,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="tv.dsh.launcher.TEST_BOOT" />
+                <action android:name="cn.rainynight.dream.TEST_BOOT" />
             </intent-filter>
         </receiver>
         <!-- 方案 B2：开机自启（系统绑定无障碍服务，绕过被厂商拦截的广播） -->

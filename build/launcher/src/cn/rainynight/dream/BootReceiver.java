@@ -1,4 +1,4 @@
-package tv.dsh.launcher;
+package cn.rainynight.dream;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -18,8 +18,8 @@ public class BootReceiver extends BroadcastReceiver {
 
     private static final long DELAY_MS = 5000;
     private static final String TAG = "DSH_BOOT";
-    /** 仅用于联调：adb shell am broadcast -a tv.dsh.launcher.TEST_BOOT */
-    private static final String ACTION_TEST = "tv.dsh.launcher.TEST_BOOT";
+    /** 仅用于联调：adb shell am broadcast -a cn.rainynight.dream.TEST_BOOT */
+    private static final String ACTION_TEST = "cn.rainynight.dream.TEST_BOOT";
 
     @Override
     public void onReceive(final Context context, Intent intent) {

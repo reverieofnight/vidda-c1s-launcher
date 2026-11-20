@@ -6,7 +6,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ADB="$ROOT/tools/adb"
 SRC="$ROOT/local/背景图"
-REMOTE_DIR="/sdcard/Android/data/tv.dsh.launcher/files/backgrounds"
+REMOTE_DIR="/sdcard/Android/data/cn.rainynight.dream/files/backgrounds"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -32,4 +32,4 @@ done
 echo "已同步 $count 张壁纸到 $REMOTE_DIR"
 
 # 触发桌面重新扫描背景目录（singleTask 会走 onNewIntent）
-"$ADB" shell am start -n tv.dsh.launcher/.LauncherActivity >/dev/null 2>&1 || true
+"$ADB" shell am start -n cn.rainynight.dream/.LauncherActivity >/dev/null 2>&1 || true

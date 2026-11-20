@@ -1,10 +1,10 @@
-# 投影仪桌面（Hisense VIDAA TV Launcher）
+# Dream 桌面（Hisense VIDAA TV Launcher）
 
 自制的电视桌面替代品，跑在 **海信 VIDAA 智能电视**（Android 9 / API 28 / MediaTek MT9669）上：
 4K 静态壁纸（x264 编码的 1fps 循环 mp4）、时钟/天气、底部应用坞、原生风格顶部菜单，外加一个完整的**壁纸管理页**（缩略图网格、设为当前/排序/删图、缓存统计与清理、U 盘/本地导入），以及**局域网网页导入**（电视上起个零依赖 HTTP 服务，电脑/手机浏览器直接上传）。
 
-- 包名：`tv.dsh.launcher`
-- 当前版本：`versionCode 2` / `versionName 0.2`
+- 包名：`cn.rainynight.dream`
+- 当前版本：`versionCode 1` / `versionName 1.0.0`
 - 设备实测：1920×1080 UI（320dpi），面板走 4K 输出；无 4K 硬件编码器，所以 4K 静图靠自带的 x264 JNI 软编 2 帧。
 
 ## 功能一句话概览
@@ -32,7 +32,7 @@ build/
   build.sh                设置入口 APK（settingsentry）构建脚本
   launcher/               桌面源码：src/ res/ jni/ AndroidManifest.xml
     libs/arm64-v8a/libx264jni.so   预编译 x264 JNI（见 NOTICE.md）
-    src/tv/dsh/launcher/QrCode.java   零依赖二维码编码器（远程导入页用）
+    src/cn/rainynight/dream/QrCode.java   零依赖二维码编码器（远程导入页用）
     www/upload.html  远程导入的上传页（构建时打进 assets/www/）
   app/                    settingsentry 源码
   icons/ext/              设置入口图标素材
@@ -87,14 +87,14 @@ sh build-launcher.sh                        # 产物：local/launcher-out/launch
 ```sh
 ./tools/adb connect 192.168.2.19:5555
 ./tools/adb install -r local/launcher-out/launcher.apk
-./tools/adb shell am start -n tv.dsh.launcher/.LauncherActivity            # 桌面
-./tools/adb shell am start -n tv.dsh.launcher/.LauncherActivity --ez wallpaper_manager true
-./tools/adb shell am start -n tv.dsh.launcher/.LauncherActivity --ez wallpaper_manager true --ez remote_import true
+./tools/adb shell am start -n cn.rainynight.dream/.LauncherActivity            # 桌面
+./tools/adb shell am start -n cn.rainynight.dream/.LauncherActivity --ez wallpaper_manager true
+./tools/adb shell am start -n cn.rainynight.dream/.LauncherActivity --ez wallpaper_manager true --ez remote_import true
 curl -s http://<电视IP>:8080/api/list          # 远程导入服务只在「远程导入」页打开时监听
 ./tools/adb exec-out screencap -p > /tmp/now.png
 ```
 
-设备 `debuggable=false`，`run-as` 和直接读 `/data/data/tv.dsh.launcher` 都不可用，排查走 logcat（tag `DSH_LAUNCHER`）。
+设备 `debuggable=false`，`run-as` 和直接读 `/data/data/cn.rainynight.dream` 都不可用，排查走 logcat（tag `DSH_LAUNCHER`）。
 
 ## 关于许可
 

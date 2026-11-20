@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">桌面</string>
-    <string name="accessibility_service_label">桌面开机自启</string>
-    <string name="accessibility_service_description">开机后自动进入自建桌面。不读取屏幕内容，也不执行其它辅助操作。</string>
+    <string name="app_name">Dream</string>
+    <string name="accessibility_service_label">Dream 开机自启</string>
+    <string name="accessibility_service_description">开机后自动进入 Dream 桌面。不读取屏幕内容，也不执行其它辅助操作。</string>
 </resources>

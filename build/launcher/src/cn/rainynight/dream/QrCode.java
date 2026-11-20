@@ -1,4 +1,4 @@
-package tv.dsh.launcher;
+package cn.rainynight.dream;
 
 import java.io.UnsupportedEncodingException;
 

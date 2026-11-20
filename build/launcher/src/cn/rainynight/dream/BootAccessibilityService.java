@@ -1,4 +1,4 @@
-package tv.dsh.launcher;
+package cn.rainynight.dream;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Intent;
