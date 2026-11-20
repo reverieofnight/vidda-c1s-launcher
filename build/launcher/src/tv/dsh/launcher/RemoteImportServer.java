@@ -81,6 +81,12 @@ public class RemoteImportServer {
         boolean deleteVideo(String name);
 
         void onRemoteEvent(String message);
+
+        /** 远程上传开始：宿主可暂停视频壁纸，避免大文件写入拖死解码器 */
+        void beginTransfer();
+
+        /** 远程上传结束（成功或失败都会调用） */
+        void endTransfer();
     }
 
     /** 保存结果：name 为最终（或已存在的同名）文件，duplicate 表示内容已存在、本次被忽略 */
@@ -399,7 +405,20 @@ public class RemoteImportServer {
             }
             thumbCache.put(key, cached);
         }
-        writeResponse(out, 200, "image/jpeg", cached);
+        writeThumb(out, cached);
+    }
+
+    /** 缩略图内容由文件名 + 修改时间决定，允许浏览器缓存一天，避免每次重排都重新下载 */
+    private void writeThumb(OutputStream out, byte[] body) throws IOException {
+        StringBuilder head = new StringBuilder(160);
+        head.append("HTTP/1.1 200 OK\r\n")
+                .append("Content-Type: image/jpeg\r\n")
+                .append("Content-Length: ").append(body.length).append("\r\n")
+                .append("Cache-Control: private, max-age=86400\r\n")
+                .append("Connection: close\r\n\r\n");
+        out.write(head.toString().getBytes("UTF-8"));
+        out.write(body);
+        out.flush();
     }
 
     private byte[] buildVideoThumb(File file) {
@@ -520,9 +539,15 @@ public class RemoteImportServer {
             writeJson(out, 413, "{\"ok\":false,\"error\":\"too large\"}");
             return;
         }
-        SaveResult saved = video
-                ? host.saveVideo(name, new LimitedInputStream(in, contentLength), contentLength)
-                : host.saveWallpaper(name, new LimitedInputStream(in, contentLength), contentLength);
+        SaveResult saved;
+        host.beginTransfer();
+        try {
+            saved = video
+                    ? host.saveVideo(name, new LimitedInputStream(in, contentLength), contentLength)
+                    : host.saveWallpaper(name, new LimitedInputStream(in, contentLength), contentLength);
+        } finally {
+            host.endTransfer();
+        }
         if (saved == null) {
             writeJson(out, 415, video
                     ? "{\"ok\":false,\"error\":\"not a valid video\"}"

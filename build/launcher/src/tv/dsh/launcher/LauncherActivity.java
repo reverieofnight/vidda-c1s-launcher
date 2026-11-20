@@ -123,6 +123,23 @@ public class LauncherActivity extends Activity {
     private static final String ICON_SIZE_SMALL = "small";
     private static final String ICON_SIZE_MEDIUM = "medium";
     private static final String ICON_SIZE_LARGE = "large";
+    /** 桌面控件：时钟 / 天气 / Dock / 壁纸切换按钮 / 抽屉各自独立开关 */
+    private static final String KEY_WIDGET_CLOCK = "widget_clock";
+    private static final String KEY_WIDGET_WEATHER = "widget_weather";
+    private static final String KEY_WIDGET_DOCK = "widget_dock";
+    private static final String KEY_WIDGET_WALLPAPER_ARROWS = "widget_wallpaper_arrows";
+    private static final String KEY_WIDGET_DRAWER = "widget_drawer";
+    /** 桌面控件显示方式：always 常驻 / hidden 隐藏 / auto 自动隐藏 */
+    private static final String KEY_WIDGET_MODE = "widget_mode";
+    private static final String WIDGET_MODE_ALWAYS = "always";
+    private static final String WIDGET_MODE_HIDDEN = "hidden";
+    private static final String WIDGET_MODE_AUTO = "auto";
+    /** 自动隐藏：桌面空闲多久后收起控件 */
+    private static final long WIDGET_AUTO_HIDE_MS = 30 * 1000L;
+    /** 自动隐藏/恢复时控件的淡入淡出时长 */
+    private static final long WIDGET_FADE_MS = 260L;
+    /** 自动隐藏时控件向上位移的距离（dp），与淡出同步 */
+    private static final int WIDGET_FADE_OFFSET_DP = 12;
     /** 4K 壁纸过渡演示：两张素材每 10 秒切一次，切换瞬间用 1080p 快照交叉淡化 */
     /** UI 壁纸显示/隐藏的快速淡化时长 */
     private static final long REVEAL_FADE_MS = 250L;
@@ -156,6 +173,13 @@ public class LauncherActivity extends Activity {
 
     /** 动态壁纸：外部视频目录 + 当前类型记忆 */
     private static final String VIDEO_BG_DIR = "backgrounds_video";
+    /** 公共壁纸目录：/sdcard/VIDAA桌面壁纸/{静态,动态}，卸载不删除 */
+    private static final String PUBLIC_BG_ROOT = "VIDAA桌面壁纸";
+    private static final String PUBLIC_STATIC_SUB = "静态";
+    private static final String PUBLIC_VIDEO_SUB = "动态";
+    /** 已弹过一次写权限申请，避免每次启动都打扰 */
+    private static final String KEY_WRITE_ASKED = "write_permission_asked";
+    private static final int REQ_WRITE_STORAGE = 4102;
     private static final String KEY_VIDEO_BACKGROUND = "current_video_background";
     private static final String KEY_WALLPAPER_TYPE = "wallpaper_type";
     /** 用户主动删掉当前壁纸后置为「无壁纸（黑屏）」，直到重新设置壁纸 */
@@ -279,6 +303,18 @@ public class LauncherActivity extends Activity {
     private LinearLayout wallpaperControls;
     private TextView wallpaperControlPrev;
     private TextView wallpaperControlNext;
+    private LinearLayout clockBox;
+    private LinearLayout weatherBox;
+    /** 桌面控件开关；壁纸切换按钮默认关闭 */
+    private boolean widgetClock = true;
+    private boolean widgetWeather = true;
+    private boolean widgetDock = true;
+    private boolean widgetArrows = false;
+    private boolean widgetDrawer = true;
+    /** 当前显示方式：常驻 / 隐藏 / 自动隐藏 */
+    private String widgetMode = WIDGET_MODE_ALWAYS;
+    /** 自动隐藏模式下，空闲计时到点后置位，任意按键复位 */
+    private boolean widgetAutoHidden;
     private TextView clockTime;
     private TextView clockDate;
     private TextView hintView;
@@ -334,17 +370,61 @@ public class LauncherActivity extends Activity {
                     + " ready=" + videoWallpaperReady
                     + " retries=" + videoRetryCount
                     + " sinceFirstFrame=" + sinceFrame + "s");
+            // 卡死看门狗：解码器偶尔会停住，isPlaying 仍为 true 但位置不动、
+            // 画面停在最后一帧或变黑。先重播一次，仍不动就退回静态壁纸，避免一直黑屏。
+            try {
+                int pos = wallpaperVideo.getCurrentPosition();
+                if (videoWallpaperReady && wallpaperVideo.isPlaying()
+                        && pos == lastVideoPosition) {
+                    videoStallTicks++;
+                } else {
+                    videoStallTicks = 0;
+                }
+                lastVideoPosition = pos;
+                if (videoStallTicks >= 2) {
+                    videoStallTicks = 0;
+                    if (videoStallRetries < 1) {
+                        videoStallRetries++;
+                        Log.w(TAG, "video stalled at " + pos + "ms, retry prepare");
+                        refreshVideoWallpaperMode();
+                    } else {
+                        Log.w(TAG, "video still stalled, fall back to image mode");
+                        videoStallRetries = 0;
+                        leaveVideoWallpaperMode();
+                        refresh4KStaticMode();
+                        Toast.makeText(LauncherActivity.this, "视频壁纸播放异常，已恢复静态壁纸",
+                                Toast.LENGTH_LONG).show();
+                    }
+                    return;
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "video stall check failed: " + t);
+            }
             handler.postDelayed(this, 5000);
         }
     };
     private String playingVideoPath;
-    /** 播放器里已经 prepare 好的视频路径，用于从后台回来时原地续播 */
+    /** 卡死看门狗：位置连续多个自检周期不变，判定解码器挂起 */
+    private int videoStallTicks;
+    private int lastVideoPosition;
+    /** 当前视频因卡死重播过几次；换视频时清零，避免无限重试 */
+    private int videoStallRetries;
     private boolean slideshowEnabled = true;
     private int slideshowIntervalSec = 30;
     private boolean slideshowFade = true;
     private boolean slideshowRandom = false;
     private boolean videoMuted = true;
     private MediaPlayer videoPlayerRef;
+    /** 打开壁纸管理页时主动暂停的视频；关闭管理页时原地续播 */
+    private boolean videoPausedByManager;
+    /** 远程导入进行中主动暂停的视频；传输结束后续播 */
+    private boolean videoPausedByTransfer;
+    /** 同时进行的上传请求数（浏览器可能并发传多个文件） */
+    private int videoTransferCount;
+    /** 传输结束时页面还开着，等页面关闭后再续播 */
+    private boolean videoResumePending;
+    /** 桌面是否在前台：后台时导入结束不要偷偷恢复视频 */
+    private boolean uiForeground = true;
     private int videoPlayToken;
     private int managerType = MANAGER_IMAGES;
     private boolean cacheCleanupStarted;
@@ -393,6 +473,8 @@ public class LauncherActivity extends Activity {
     private int backgroundIndex = -1;
     private String currentBackgroundName;
     private boolean bgSwitching;
+    /** bgTick 是否已经挂在 handler 上：避免重复排队，也避免被误删后不再续期 */
+    private boolean bgTickScheduled;
     private LinearLayout menuModule;
     private LinearLayout menuBar;
     private boolean menuOpen;
@@ -437,6 +519,15 @@ public class LauncherActivity extends Activity {
     private TextView settingsMediumButton;
     private TextView settingsLargeButton;
     private TextView settingsIconDesc;
+    private TextView settingsNavWidgets;
+    private LinearLayout settingsIconPage;
+    private LinearLayout settingsWidgetPage;
+    private LinearLayout settingsWidgetFirstRow;
+    private TextView settingsModeAlways;
+    private TextView settingsModeHidden;
+    private TextView settingsModeAuto;
+    /** 当前选中的二级页：icons / widgets */
+    private String settingsSection = "icons";
     private boolean settingsOpen;
     /** 当前图标大小预设：small / medium / large */
     private String iconSizePreset = ICON_SIZE_MEDIUM;
@@ -510,6 +601,13 @@ public class LauncherActivity extends Activity {
                 .getBoolean(KEY_REVEAL_4K, true);
         iconSizePreset = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getString(KEY_ICON_SIZE, ICON_SIZE_MEDIUM);
+        SharedPreferences widgetPrefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        widgetClock = widgetPrefs.getBoolean(KEY_WIDGET_CLOCK, true);
+        widgetWeather = widgetPrefs.getBoolean(KEY_WIDGET_WEATHER, true);
+        widgetDock = widgetPrefs.getBoolean(KEY_WIDGET_DOCK, true);
+        widgetArrows = widgetPrefs.getBoolean(KEY_WIDGET_WALLPAPER_ARROWS, false);
+        widgetDrawer = widgetPrefs.getBoolean(KEY_WIDGET_DRAWER, true);
+        widgetMode = widgetPrefs.getString(KEY_WIDGET_MODE, WIDGET_MODE_ALWAYS);
 
         loadOpenTimes();
 
@@ -626,6 +724,8 @@ public class LauncherActivity extends Activity {
         wallpaperTransitionLayer.setScaleY(WALLPAPER_OVERSCAN);
         desktopModule.addView(wallpaperTransitionLayer, matchParent());
 
+        // 有写权限时先把旧的私有壁纸迁到公共目录，再扫描
+        ensurePublicWallpaperAccess();
         reloadBackgrounds();
         reload4KBackgrounds();
         reloadVideoBackgrounds();
@@ -639,7 +739,7 @@ public class LauncherActivity extends Activity {
         homeLayer = new FrameLayout(this);
         desktopModule.addView(homeLayer, matchParent());
 
-        LinearLayout clockBox = new LinearLayout(this);
+        clockBox = new LinearLayout(this);
         clockBox.setOrientation(LinearLayout.VERTICAL);
         // 时钟不铺半透明底板，直接压在壁纸上；保留内边距以维持原来的文字位置
         clockBox.setPadding(dp(26), dp(16), dp(26), dp(18));
@@ -669,7 +769,7 @@ public class LauncherActivity extends Activity {
         homeLayer.addView(clockBox, clockLp);
 
         // ---- 右上天气：与时钟同一行，左右两端对齐 ----
-        LinearLayout weatherBox = new LinearLayout(this);
+        weatherBox = new LinearLayout(this);
         weatherBox.setOrientation(LinearLayout.VERTICAL);
         weatherBox.setGravity(Gravity.END);
 
@@ -782,6 +882,9 @@ public class LauncherActivity extends Activity {
         hintLp.rightMargin = dp(30);
         hintLp.bottomMargin = dp(12);
         homeLayer.addView(hintView, hintLp);
+
+        // 按用户设置决定各桌面控件是否显示（壁纸切换按钮默认关闭）
+        applyWidgetVisibility();
 
         // ---- 抽屉层：应用网格 ----
         drawer = new FrameLayout(this);
@@ -947,9 +1050,126 @@ public class LauncherActivity extends Activity {
     // ---------- 动态壁纸（视频文件，循环播放） ----------
 
     private File videoBgDir() {
+        File pub = publicWallpaperSubDir(PUBLIC_VIDEO_SUB);
+        if (pub != null) {
+            return pub;
+        }
         File base = getExternalFilesDir(null) != null
                 ? getExternalFilesDir(null) : getFilesDir();
         return new File(base, VIDEO_BG_DIR);
+    }
+
+    /** 静态壁纸目录：优先公共目录，没权限回落到应用私有目录 */
+    private File staticWallpaperDir() {
+        File pub = publicWallpaperSubDir(PUBLIC_STATIC_SUB);
+        if (pub != null) {
+            return pub;
+        }
+        File base = getExternalFilesDir(null) != null
+                ? getExternalFilesDir(null) : getFilesDir();
+        return new File(base, FOUR_K_BG_DIR);
+    }
+
+    private boolean canWritePublicWallpapers() {
+        return checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED
+                && Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState());
+    }
+
+    /** 公共子目录；没权限或创建失败返回 null */
+    private File publicWallpaperSubDir(String sub) {
+        if (!canWritePublicWallpapers()) {
+            return null;
+        }
+        File dir = new File(new File(Environment.getExternalStorageDirectory(), PUBLIC_BG_ROOT), sub);
+        if (!dir.exists() && !dir.mkdirs()) {
+            Log.w(TAG, "create public wallpaper dir failed: " + dir);
+            return null;
+        }
+        return dir;
+    }
+
+    /** 首次启动申请写权限；已有权限则先把私有目录里的壁纸迁到公共目录 */
+    private void ensurePublicWallpaperAccess() {
+        if (canWritePublicWallpapers()) {
+            migrateWallpapersToPublic();
+            return;
+        }
+        if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_WRITE_ASKED, false)) {
+            return;
+        }
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_WRITE_ASKED, true).apply();
+        requestPermissions(new String[]{
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_WRITE_STORAGE);
+    }
+
+    /** 把应用私有目录里的静态/动态壁纸搬到公共目录，卸载后不丢 */
+    private void migrateWallpapersToPublic() {
+        if (!canWritePublicWallpapers()) {
+            return;
+        }
+        File base = getExternalFilesDir(null) != null
+                ? getExternalFilesDir(null) : getFilesDir();
+        int images = migrateDir(new File(base, FOUR_K_BG_DIR),
+                publicWallpaperSubDir(PUBLIC_STATIC_SUB));
+        int videos = migrateDir(new File(base, VIDEO_BG_DIR),
+                publicWallpaperSubDir(PUBLIC_VIDEO_SUB));
+        if (images + videos > 0) {
+            Log.i(TAG, "wallpapers migrated to public: images=" + images + " videos=" + videos);
+        }
+    }
+
+    private int migrateDir(File from, File to) {
+        if (from == null || to == null || from.equals(to) || !from.isDirectory()) {
+            return 0;
+        }
+        File[] files = from.listFiles();
+        if (files == null) {
+            return 0;
+        }
+        int moved = 0;
+        for (File file : files) {
+            if (!file.isFile()) {
+                continue;
+            }
+            File dst = new File(to, file.getName());
+            if (dst.exists()) {
+                file.delete();
+                continue;
+            }
+            if (file.renameTo(dst)) {
+                moved++;
+                continue;
+            }
+            // 跨挂载点时退回复制；失败就留着，下次再试
+            InputStream in = null;
+            OutputStream out = null;
+            try {
+                in = new FileInputStream(file);
+                out = new FileOutputStream(dst);
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                }
+                out.flush();
+                moved++;
+                file.delete();
+            } catch (Throwable t) {
+                Log.w(TAG, "migrate wallpaper failed: " + file.getName(), t);
+                dst.delete();
+            } finally {
+                closeQuietly(in);
+                if (out != null) {
+                    try {
+                        out.close();
+                    } catch (IOException ignored) {
+                    }
+                }
+            }
+        }
+        return moved;
     }
 
     private static boolean isVideoName(String name) {
@@ -1086,7 +1306,15 @@ public class LauncherActivity extends Activity {
         final int token = ++videoPlayToken;
         videoWallpaperReady = false;
         handler.removeCallbacks(bgTick);
+        bgTickScheduled = false;
         final String prevPath = playingVideoPath;
+        if (prevPath != null && !prevPath.equals(file.getAbsolutePath())) {
+            // 换新视频：重试计数清零，避免上一个视频的失败次数影响这一个
+            videoRetryCount = 0;
+            videoStallRetries = 0;
+        }
+        videoStallTicks = 0;
+        lastVideoPosition = 0;
         final boolean switchingVideo = videoPlayerRef != null && prevPath != null
                 && !prevPath.equals(file.getAbsolutePath());
         if (switchingVideo) {
@@ -1128,6 +1356,8 @@ public class LauncherActivity extends Activity {
     /** 真正开始播放下一个视频；videoFrameCover=true 表示封面已经用视频帧铺好，不再铺静态壁纸 */
     private void startVideoWallpaper(final File file, final int token,
                                      final boolean videoFrameCover) {
+        videoPausedByManager = false;
+        videoResumePending = false;
         fourKStaticMode = false;
         fourKEncoding = false;
         fourKEncodeToken++;
@@ -1289,6 +1519,9 @@ public class LauncherActivity extends Activity {
 
     private void stopVideoWallpaper() {
         videoWallpaperReady = false;
+        videoPausedByManager = false;
+        videoPausedByTransfer = false;
+        videoResumePending = false;
         playingVideoPath = null;
         pendingVideoFile = null;
         videoPlayToken++;
@@ -1362,6 +1595,28 @@ public class LauncherActivity extends Activity {
         return new File(videoItems.get(videoIndex).filePath);
     }
 
+    /** 远程导入结束：把为传输让路而暂停的视频从原位置续播 */
+    private void resumeVideoAfterTransfer() {
+        videoResumePending = false;
+        if (!videoWallpaperMode || wallpaperVideo == null) {
+            return;
+        }
+        if (videoSurfaceLost || videoPlayerRef == null) {
+            refreshVideoWallpaperMode();
+            return;
+        }
+        try {
+            wallpaperVideo.start();
+            videoWallpaperReady = true;
+            handler.removeCallbacks(videoHealthTick);
+            handler.postDelayed(videoHealthTick, 5000);
+            Log.i(TAG, "remote transfer done, video wallpaper resumed");
+        } catch (Throwable t) {
+            Log.w(TAG, "resume video after transfer failed: " + t);
+            refreshVideoWallpaperMode();
+        }
+    }
+
     /**
      * 回到前台：
      * 1) 播放器还停在同一个文件上、只是被 pause 了 → 直接 start() 续播，不出黑帧；
@@ -1369,6 +1624,16 @@ public class LauncherActivity extends Activity {
      * playVideoWallpaper 里还有 3 秒看门狗兜底，真卡黑屏会重试一次再退回图片模式。
      */
     private void restoreVideoWallpaperOnForeground() {
+        if (managerOpen || remoteOpen) {
+            // 管理页/远程页还盖着桌面：保持暂停，等页面关闭时再续播或重播
+            Log.i(TAG, "skip video restore while manager/remote page open");
+            return;
+        }
+        if (videoPausedByTransfer) {
+            // 远程导入还没传完：先保持暂停，传完由 endTransfer 续播
+            Log.i(TAG, "skip video restore while transfer in progress");
+            return;
+        }
         File file = currentVideoFile();
         if (videoSurfaceLost) {
             // surface 被销毁过（切走应用时必然发生），旧播放器已经没有输出目标：
@@ -1386,6 +1651,9 @@ public class LauncherActivity extends Activity {
                     wallpaperVideo.start();
                 }
                 videoWallpaperReady = true;
+                videoResumePending = false;
+                handler.removeCallbacks(videoHealthTick);
+                handler.postDelayed(videoHealthTick, 5000);
                 Log.i(TAG, "video wallpaper resumed " + file.getName());
                 return;
             } catch (Throwable t) {
@@ -1442,6 +1710,8 @@ public class LauncherActivity extends Activity {
         videoIndex = index;
         currentVideoName = name;
         videoWallpaperMode = true;
+        videoStallRetries = 0;
+        videoRetryCount = 0;
         setWallpaperCleared(false);
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_VIDEO_BACKGROUND, name)
@@ -1576,7 +1846,7 @@ public class LauncherActivity extends Activity {
 
     private List<BackgroundItem> scan4KBackgrounds() {
         List<BackgroundItem> items = new ArrayList<>();
-        File dir = new File(getExternalFilesDir(null), FOUR_K_BG_DIR);
+        File dir = staticWallpaperDir();
         if (!dir.exists()) {
             dir.mkdirs();
             return items;
@@ -1643,6 +1913,7 @@ public class LauncherActivity extends Activity {
     /** 把两层 UI 壁纸都撤掉，露出桌面根容器的黑色背景 */
     private void clearWallpaperToBlack() {
         handler.removeCallbacks(bgTick);
+        bgTickScheduled = false;
         if (bgFront != null) {
             bgFront.setImageDrawable(null);
             bgFront.setVisibility(View.INVISIBLE);
@@ -1688,8 +1959,9 @@ public class LauncherActivity extends Activity {
             return;
         }
         fourKStaticMode = true;
-        handler.removeCallbacks(bgTick);
+        // 这里以前会 removeCallbacks(bgTick) 且不再续期，导致进 4K 模式后幻灯片永远不触发
         show4KCurrent();
+        ensureBgTimer();
     }
 
     private void show4KCurrent() {
@@ -2661,7 +2933,8 @@ public class LauncherActivity extends Activity {
 
         TextView hintCache = new TextView(this);
         hintCache.setText(fourKCacheSummary()
-                + "\n缓存存放在应用内部存储，卸载应用或清空应用数据会一并删除；删除图片壁纸后，对应缓存下次启动自动清理。");
+                + "\n图片保存在 /sdcard/VIDAA桌面壁纸/静态、视频在 /动态，卸载应用不会删除；"
+                + "4K 缓存位于应用内部存储，卸载或清空数据后会自动重建。");
         hintCache.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         hintCache.setTextColor(0xFF9FB0C2);
         hintCache.setLineSpacing(dp(2), 1f);
@@ -3081,6 +3354,20 @@ public class LauncherActivity extends Activity {
         hideMenuImmediately();
         managerOpen = true;
         managerPage = 0;
+        // 管理页完全盖住桌面，视频看不见；先暂停解码，
+        // 避免导入大文件时解码器和磁盘写入、媒体扫描抢资源导致卡死。
+        if (videoWallpaperMode && wallpaperVideo != null) {
+            handler.removeCallbacks(videoHealthTick);
+            try {
+                if (wallpaperVideo.isPlaying()) {
+                    wallpaperVideo.pause();
+                    videoPausedByManager = true;
+                    Log.i(TAG, "manager opened, video wallpaper paused");
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "pause video on manager open failed: " + t);
+            }
+        }
         reloadBackgrounds();
         reload4KBackgrounds();
         reloadVideoBackgrounds();
@@ -3126,13 +3413,29 @@ public class LauncherActivity extends Activity {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
         focusFirstDockItem();
-        // 管理页关闭时，如果当前是动态壁纸就重新起一遍播放器：
-        // 管理页期间视频层的 surface 可能被销毁重建，旧播放器会往废弃的 surface 送帧，
-        // 回到桌面只剩一块黑 surface（用户反馈的「返回桌面黑屏」）。
+        // 管理页只是盖在桌面上：surface 还在就从暂停位置续播；
+        // 只有 surface 真的被销毁（或播放器已不在）时才需要重新 prepare。
         if (videoWallpaperMode) {
-            Log.i(TAG, "manager closed, re-prepare video wallpaper");
-            refreshVideoWallpaperMode();
+            if (videoSurfaceLost || videoPlayerRef == null) {
+                Log.i(TAG, "manager closed, surface lost, re-prepare video wallpaper");
+                refreshVideoWallpaperMode();
+            } else if (videoPausedByManager || videoResumePending) {
+                videoResumePending = false;
+                try {
+                    wallpaperVideo.start();
+                    videoWallpaperReady = true;
+                    handler.removeCallbacks(videoHealthTick);
+                    handler.postDelayed(videoHealthTick, 5000);
+                    Log.i(TAG, "manager closed, video wallpaper resumed");
+                } catch (Throwable t) {
+                    Log.w(TAG, "resume video on manager close failed: " + t);
+                    refreshVideoWallpaperMode();
+                }
+            }
         }
+        videoPausedByManager = false;
+        videoResumePending = false;
+        resetWidgetAutoHide();
     }
 
     // ---------- 桌面设置页 ----------
@@ -3163,8 +3466,10 @@ public class LauncherActivity extends Activity {
         title.setPadding(dp(16), 0, 0, dp(12));
         nav.addView(title);
 
-        settingsNavIconSize = makeSettingsNavItem("图标尺寸");
+        settingsNavIconSize = makeSettingsNavItem("图标尺寸", "icons");
         nav.addView(settingsNavIconSize);
+        settingsNavWidgets = makeSettingsNavItem("桌面控件", "widgets");
+        nav.addView(settingsNavWidgets);
 
         View divider = new View(this);
         divider.setBackgroundColor(0xFF1F2A36);
@@ -3178,12 +3483,18 @@ public class LauncherActivity extends Activity {
         page.addView(detail, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 6f));
 
+        // ---- 页一：图标尺寸 ----
+        settingsIconPage = new LinearLayout(this);
+        settingsIconPage.setOrientation(LinearLayout.VERTICAL);
+        detail.addView(settingsIconPage, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         TextView section = new TextView(this);
         section.setText("图标尺寸");
         section.setTextColor(Color.WHITE);
         section.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         section.setTypeface(Typeface.DEFAULT_BOLD);
-        detail.addView(section);
+        settingsIconPage.addView(section);
 
         TextView sectionDesc = new TextView(this);
         sectionDesc.setText("调整 Dock 与抽屉的图标尺寸，每行数量会自动适配。");
@@ -3192,7 +3503,7 @@ public class LauncherActivity extends Activity {
         LinearLayout.LayoutParams sectionDescLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         sectionDescLp.topMargin = dp(8);
-        detail.addView(sectionDesc, sectionDescLp);
+        settingsIconPage.addView(sectionDesc, sectionDescLp);
 
         // 分段按钮：具体尺寸
         LinearLayout group = new LinearLayout(this);
@@ -3207,7 +3518,7 @@ public class LauncherActivity extends Activity {
         LinearLayout.LayoutParams groupLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
         groupLp.topMargin = dp(24);
-        detail.addView(group, groupLp);
+        settingsIconPage.addView(group, groupLp);
 
         settingsIconDesc = new TextView(this);
         settingsIconDesc.setTextColor(0xFF8FA0B3);
@@ -3215,16 +3526,150 @@ public class LauncherActivity extends Activity {
         LinearLayout.LayoutParams descLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         descLp.topMargin = dp(18);
-        detail.addView(settingsIconDesc, descLp);
+        settingsIconPage.addView(settingsIconDesc, descLp);
+
+        // ---- 页二：桌面控件 ----
+        settingsWidgetPage = new LinearLayout(this);
+        settingsWidgetPage.setOrientation(LinearLayout.VERTICAL);
+        settingsWidgetPage.setVisibility(View.GONE);
+        detail.addView(settingsWidgetPage, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        TextView widgetTitle = new TextView(this);
+        widgetTitle.setText("桌面控件");
+        widgetTitle.setTextColor(Color.WHITE);
+        widgetTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        widgetTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        settingsWidgetPage.addView(widgetTitle);
+
+        TextView widgetDesc = new TextView(this);
+        widgetDesc.setText("选择桌面上要显示的元素，关闭后对应位置留空。");
+        widgetDesc.setTextColor(0xFF8FA0B3);
+        widgetDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        LinearLayout.LayoutParams widgetDescLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        widgetDescLp.topMargin = dp(8);
+        settingsWidgetPage.addView(widgetDesc, widgetDescLp);
+
+        settingsWidgetFirstRow = makeSettingsRow("时钟", widgetClock,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton button,
+                            boolean checked) {
+                        widgetClock = checked;
+                        setWidgetFlag(KEY_WIDGET_CLOCK, checked);
+                        applyWidgetVisibility();
+                    }
+                });
+        settingsWidgetPage.addView(settingsWidgetFirstRow, settingsRowLp());
+
+        settingsWidgetPage.addView(makeSettingsRow("天气", widgetWeather,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton button,
+                            boolean checked) {
+                        widgetWeather = checked;
+                        setWidgetFlag(KEY_WIDGET_WEATHER, checked);
+                        applyWidgetVisibility();
+                    }
+                }), settingsRowLp());
+
+        settingsWidgetPage.addView(makeSettingsRow("Dock 应用栏", widgetDock,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton button,
+                            boolean checked) {
+                        widgetDock = checked;
+                        setWidgetFlag(KEY_WIDGET_DOCK, checked);
+                        applyWidgetVisibility();
+                    }
+                }), settingsRowLp());
+
+        settingsWidgetPage.addView(makeSettingsRow("壁纸切换按钮（◀ ▶）", widgetArrows,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton button,
+                            boolean checked) {
+                        widgetArrows = checked;
+                        setWidgetFlag(KEY_WIDGET_WALLPAPER_ARROWS, checked);
+                        applyWidgetVisibility();
+                    }
+                }), settingsRowLp());
+
+        LinearLayout drawerRow = makeSettingsRow("抽屉（↓ 打开应用）", widgetDrawer,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton button,
+                            boolean checked) {
+                        widgetDrawer = checked;
+                        setWidgetFlag(KEY_WIDGET_DRAWER, checked);
+                        applyWidgetVisibility();
+                    }
+                });
+        settingsWidgetPage.addView(drawerRow, settingsRowLp());
+
+        TextView modeTitle = new TextView(this);
+        modeTitle.setText("显示方式");
+        modeTitle.setTextColor(Color.WHITE);
+        modeTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        modeTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams modeTitleLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        modeTitleLp.topMargin = dp(20);
+        settingsWidgetPage.addView(modeTitle, modeTitleLp);
+
+        LinearLayout modeGroup = new LinearLayout(this);
+        modeGroup.setOrientation(LinearLayout.HORIZONTAL);
+        modeGroup.setBackgroundColor(0xFF141C27);
+        settingsModeAlways = makeWidgetModeOption("常驻", WIDGET_MODE_ALWAYS);
+        settingsModeHidden = makeWidgetModeOption("隐藏", WIDGET_MODE_HIDDEN);
+        settingsModeAuto = makeWidgetModeOption("自动隐藏", WIDGET_MODE_AUTO);
+        modeGroup.addView(settingsModeAlways);
+        modeGroup.addView(settingsModeHidden);
+        modeGroup.addView(settingsModeAuto);
+        LinearLayout.LayoutParams modeGroupLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
+        modeGroupLp.topMargin = dp(10);
+        settingsWidgetPage.addView(modeGroup, modeGroupLp);
+
+        TextView modeDesc = new TextView(this);
+        modeDesc.setText("自动隐藏：桌面空闲 30 秒后隐藏全部控件，按任意键或触摸后恢复。");
+        modeDesc.setTextColor(0xFF8FA0B3);
+        modeDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        LinearLayout.LayoutParams modeDescLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        modeDescLp.topMargin = dp(12);
+        settingsWidgetPage.addView(modeDesc, modeDescLp);
 
         // 左右方向键在菜单与内容之间切换
         settingsNavIconSize.setId(0x2010);
         settingsSmallButton.setId(0x2011);
+        settingsNavWidgets.setId(0x2012);
+        settingsWidgetFirstRow.setId(0x2013);
+        drawerRow.setId(0x2014);
+        settingsModeAlways.setId(0x2015);
+        settingsModeHidden.setId(0x2016);
+        settingsModeAuto.setId(0x2017);
         settingsNavIconSize.setNextFocusRightId(0x2011);
+        settingsWidgetFirstRow.setNextFocusLeftId(0x2012);
+        settingsNavWidgets.setNextFocusRightId(0x2013);
         settingsSmallButton.setNextFocusLeftId(0x2010);
+        // 一级菜单最后一项按下键停住，避免直接跳进右侧内容
+        settingsNavWidgets.setNextFocusDownId(0x2012);
+        // 显示方式一行：下键固定落到「常驻」，左右在三个选项之间移动
+        drawerRow.setNextFocusDownId(0x2015);
+        settingsModeAlways.setNextFocusUpId(0x2014);
+        settingsModeHidden.setNextFocusUpId(0x2014);
+        settingsModeAuto.setNextFocusUpId(0x2014);
+        settingsModeAlways.setNextFocusLeftId(0x2012);
+        settingsModeAlways.setNextFocusRightId(0x2016);
+        settingsModeHidden.setNextFocusLeftId(0x2015);
+        settingsModeHidden.setNextFocusRightId(0x2017);
+        settingsModeAuto.setNextFocusLeftId(0x2016);
+        settingsModeAuto.setNextFocusRightId(0x2017);
     }
 
-    private TextView makeSettingsNavItem(String label) {
+    private TextView makeSettingsNavItem(String label, final String section) {
         TextView item = new TextView(this);
         item.setText(label);
         item.setTextColor(Color.WHITE);
@@ -3238,30 +3683,59 @@ public class LauncherActivity extends Activity {
         item.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
+                // 焦点移到哪一项，右侧就切到对应的二级页
+                if (hasFocus) {
+                    selectSettingsSection(section);
+                }
                 updateSettingsNav();
             }
         });
         item.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                // 一级菜单只有一个分组，点击后直接把焦点交给右侧选项
-                if (settingsSmallButton != null) {
+                // 点击后把焦点交给右侧页面的第一项
+                selectSettingsSection(section);
+                if ("icons".equals(section) && settingsSmallButton != null) {
                     settingsSmallButton.requestFocus();
+                } else if ("widgets".equals(section) && settingsWidgetFirstRow != null) {
+                    settingsWidgetFirstRow.requestFocus();
                 }
             }
         });
         return item;
     }
 
-    /** 一级菜单当前只有「图标大小」一项，选中项保持深色底，聚焦时高亮 */
-    private void updateSettingsNav() {
-        if (settingsNavIconSize == null) {
+    private void selectSettingsSection(String section) {
+        if (section == null) {
             return;
         }
-        if (settingsNavIconSize.isFocused()) {
-            settingsNavIconSize.setBackgroundResource(R.drawable.dock_focus);
+        settingsSection = section;
+        boolean icons = "icons".equals(section);
+        if (settingsIconPage != null) {
+            settingsIconPage.setVisibility(icons ? View.VISIBLE : View.GONE);
+        }
+        if (settingsWidgetPage != null) {
+            settingsWidgetPage.setVisibility(icons ? View.GONE : View.VISIBLE);
+        }
+        updateSettingsNav();
+    }
+
+    /** 一级菜单：选中项保持深色底，聚焦时高亮 */
+    private void updateSettingsNav() {
+        applySettingsNavStyle(settingsNavIconSize, "icons");
+        applySettingsNavStyle(settingsNavWidgets, "widgets");
+    }
+
+    private void applySettingsNavStyle(TextView item, String section) {
+        if (item == null) {
+            return;
+        }
+        if (item.isFocused()) {
+            item.setBackgroundResource(R.drawable.dock_focus);
+        } else if (section.equals(settingsSection)) {
+            item.setBackgroundColor(0xFF1E2A38);
         } else {
-            settingsNavIconSize.setBackgroundColor(0xFF1E2A38);
+            item.setBackgroundColor(Color.TRANSPARENT);
         }
     }
 
@@ -3333,6 +3807,51 @@ public class LauncherActivity extends Activity {
         updateIconSizeOptions();
     }
 
+    private TextView makeWidgetModeOption(String label, final String mode) {
+        TextView option = new TextView(this);
+        option.setText(label);
+        option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        option.setGravity(Gravity.CENTER);
+        option.setFocusable(true);
+        option.setFocusableInTouchMode(true);
+        option.setPadding(dp(18), 0, dp(18), 0);
+        option.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
+        option.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                updateWidgetModeOptions();
+            }
+        });
+        option.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setWidgetMode(mode);
+            }
+        });
+        return option;
+    }
+
+    private void updateWidgetModeOptions() {
+        applyWidgetModeOption(settingsModeAlways, WIDGET_MODE_ALWAYS);
+        applyWidgetModeOption(settingsModeHidden, WIDGET_MODE_HIDDEN);
+        applyWidgetModeOption(settingsModeAuto, WIDGET_MODE_AUTO);
+    }
+
+    private void applyWidgetModeOption(TextView option, String mode) {
+        if (option == null) {
+            return;
+        }
+        boolean selected = mode.equals(widgetMode);
+        boolean focused = option.isFocused();
+        if (focused) {
+            option.setBackgroundResource(R.drawable.dock_focus);
+        } else {
+            option.setBackgroundColor(selected ? 0xFF1E2A38 : 0xFF141C27);
+        }
+        option.setTextColor(selected || focused ? Color.WHITE : 0xFF8FA0B3);
+    }
+
     private void openDesktopSettings() {
         if (settingsModule == null || settingsOpen) {
             return;
@@ -3340,6 +3859,8 @@ public class LauncherActivity extends Activity {
         hideMenuImmediately();
         settingsOpen = true;
         updateIconSizeOptions();
+        selectSettingsSection(settingsSection);
+        updateWidgetModeOptions();
         settingsModule.setVisibility(View.VISIBLE);
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
@@ -3348,8 +3869,10 @@ public class LauncherActivity extends Activity {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
         // 默认焦点落在左侧一级菜单，按右键进入右侧设置项
-        if (settingsNavIconSize != null) {
-            settingsNavIconSize.requestFocus();
+        TextView navItem = "widgets".equals(settingsSection)
+                ? settingsNavWidgets : settingsNavIconSize;
+        if (navItem != null) {
+            navItem.requestFocus();
         }
     }
 
@@ -3368,6 +3891,7 @@ public class LauncherActivity extends Activity {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
         focusFirstDockItem();
+        resetWidgetAutoHide();
     }
 
     // ---------- 远程导入（局域网 HTTP 上传） ----------
@@ -3611,7 +4135,12 @@ public class LauncherActivity extends Activity {
                 desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
             }
             focusFirstDockItem();
+            // 传输期间为导入让路而暂停的视频，回到桌面后从原位置续播
+            if (videoWallpaperMode && (videoPausedByTransfer || videoResumePending)) {
+                resumeVideoAfterTransfer();
+            }
         }
+        resetWidgetAutoHide();
     }
 
     private boolean isRemoteKeepRunning() {
@@ -3684,9 +4213,7 @@ public class LauncherActivity extends Activity {
 
         @Override
         public File wallpaperDir() {
-            File base = getExternalFilesDir(null) != null
-                    ? getExternalFilesDir(null) : getFilesDir();
-            return new File(base, FOUR_K_BG_DIR);
+            return staticWallpaperDir();
         }
 
         @Override
@@ -3969,6 +4496,56 @@ public class LauncherActivity extends Activity {
                     }
                 }
             });
+        }
+
+        @Override
+        public void beginTransfer() {
+            callOnUi(new Callable<Void>() {
+                @Override
+                public Void call() {
+                    videoTransferCount++;
+                    // 页面盖着桌面时视频本来就已经暂停了，不需要再动；
+                    // 只有人在桌面、视频正在播时，才为导入让路暂停解码。
+                    if (videoTransferCount == 1 && videoWallpaperMode && wallpaperVideo != null
+                            && !managerOpen && !remoteOpen) {
+                        try {
+                            if (wallpaperVideo.isPlaying()) {
+                                wallpaperVideo.pause();
+                                videoPausedByTransfer = true;
+                                handler.removeCallbacks(videoHealthTick);
+                                Log.i(TAG, "remote transfer started, video wallpaper paused");
+                            }
+                        } catch (Throwable t) {
+                            Log.w(TAG, "pause video for transfer failed: " + t);
+                        }
+                    }
+                    return null;
+                }
+            }, 3000);
+        }
+
+        @Override
+        public void endTransfer() {
+            callOnUi(new Callable<Void>() {
+                @Override
+                public Void call() {
+                    if (videoTransferCount > 0) {
+                        videoTransferCount--;
+                    }
+                    if (videoTransferCount > 0 || !videoPausedByTransfer) {
+                        return null;
+                    }
+                    videoPausedByTransfer = false;
+                    if (managerOpen || remoteOpen || !uiForeground) {
+                        // 传输结束时页面还开着、或桌面不在前台：等回到桌面后再续播
+                        videoResumePending = true;
+                        Log.i(TAG, "remote transfer done, resume later");
+                        return null;
+                    }
+                    resumeVideoAfterTransfer();
+                    return null;
+                }
+            }, 3000);
         }
     }
 
@@ -5324,6 +5901,16 @@ public class LauncherActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_WRITE_STORAGE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                migrateWallpapersToPublic();
+                reload4KBackgrounds();
+                reloadVideoBackgrounds();
+                refresh4KStaticMode();
+                Toast.makeText(this, "壁纸已保存到公共目录，卸载不会丢失", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
         if (requestCode != REQ_READ_STORAGE) {
             return;
         }
@@ -5661,9 +6248,7 @@ public class LauncherActivity extends Activity {
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return null;
             }
-            File baseDir = getExternalFilesDir(null) != null
-                    ? getExternalFilesDir(null) : getFilesDir();
-            File dir = new File(baseDir, FOUR_K_BG_DIR);
+            File dir = staticWallpaperDir();
             if (!dir.exists()) {
                 dir.mkdirs();
             }
@@ -5714,6 +6299,7 @@ public class LauncherActivity extends Activity {
     private final Runnable bgTick = new Runnable() {
         @Override
         public void run() {
+            bgTickScheduled = false;
             if (!slideshowEnabled || videoWallpaperMode) {
                 return;
             }
@@ -5724,6 +6310,7 @@ public class LauncherActivity extends Activity {
             } else if (backgroundItems.size() > 1) {
                 advanceBackground(1, slideshowRandom);
             }
+            bgTickScheduled = true;
             handler.postDelayed(this, slideshowIntervalSec * 1000L);
         }
     };
@@ -6296,12 +6883,25 @@ public class LauncherActivity extends Activity {
 
     private void resetBgTimer() {
         handler.removeCallbacks(bgTick);
+        bgTickScheduled = false;
         if (!slideshowEnabled || videoWallpaperMode) {
             return;
         }
         int count = fourKStaticEnabled() ? fourKItems.size() : backgroundItems.size();
         if (count > 1) {
             handler.postDelayed(bgTick, slideshowIntervalSec * 1000L);
+            bgTickScheduled = true;
+        }
+    }
+
+    /**
+     * 只保证计时器在跑，不打断已有的倒计时。
+     * 用在 onResume / 4K 模式刷新这类"可能已经排过队"的路径上，
+     * 否则频繁回到桌面会把 30 分钟的倒计时无限推迟。
+     */
+    private void ensureBgTimer() {
+        if (!bgTickScheduled) {
+            resetBgTimer();
         }
     }
 
@@ -6447,13 +7047,19 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        uiForeground = true;
         handler.removeCallbacks(clockTick);
         handler.post(clockTick);
         handler.removeCallbacks(weatherTick);
         handler.post(weatherTick);
         reloadBackgrounds();
         reload4KBackgrounds();
-        resetBgTimer();
+        // 只续期、不重置：频繁回到桌面不应该把幻灯片倒计时无限推后
+        ensureBgTimer();
+        // 回到桌面先恢复控件显示，再重新开始自动隐藏计时
+        widgetAutoHidden = false;
+        applyWidgetVisibility();
+        resetWidgetAutoHide();
         // 从其它应用/应用商店回到桌面时，重新扫一遍应用列表：
         // 新安装的应用才能按"安装时间倒序"立刻出现在底部补位里。
         // 扫描放后台线程，列表没变化就不动 dock（避免返回桌面时 UI 卡一下、dock 闪一下）。
@@ -6646,9 +7252,12 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        uiForeground = false;
         handler.removeCallbacks(clockTick);
         handler.removeCallbacks(weatherTick);
         handler.removeCallbacks(bgTick);
+        bgTickScheduled = false;
+        handler.removeCallbacks(widgetAutoHideTick);
         handler.removeCallbacks(videoHealthTick);
         if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
             wallpaperVideo.pause();
@@ -6675,7 +7284,7 @@ public class LauncherActivity extends Activity {
     // ---------- 抽屉 ----------
 
     private void openDrawer() {
-        if (drawerOpen) return;
+        if (drawerOpen || !widgetDrawer) return;
         drawerOpen = true;
         returnFocusToArrows = wallpaperControls != null && isFocusIn(wallpaperControls);
         prepareDrawerFrost();
@@ -6708,6 +7317,7 @@ public class LauncherActivity extends Activity {
             focusFirstDockItem();
         }
         returnFocusToArrows = false;
+        resetWidgetAutoHide();
     }
 
     @Override
@@ -6834,6 +7444,7 @@ public class LauncherActivity extends Activity {
                         .setDuration(MENU_ANIM_MS).setInterpolator(CLOSE_EASE).start();
             }
         }
+        resetWidgetAutoHide();
     }
 
     private void hideMenuImmediately() {
@@ -6855,7 +7466,8 @@ public class LauncherActivity extends Activity {
      * 最左应用按左 → ▶；▶ 按左 → ◀；◀ 按左 → 最右应用；反向同理。
      */
     private boolean handleDockArrowRing(int key) {
-        if (wallpaperControls == null || dock == null || dock.getChildCount() == 0) {
+        if (wallpaperControls == null || dock == null || dock.getChildCount() == 0
+                || !widgetArrows || !widgetsShown()) {
             return false;
         }
         View focused = getCurrentFocus();
@@ -7255,9 +7867,147 @@ public class LauncherActivity extends Activity {
     }
 
     private void focusFirstDockItem() {
-        if (dock != null && dock.getChildCount() > 0) {
+        if (dock != null && dock.getVisibility() == View.VISIBLE && dock.getChildCount() > 0) {
             dock.getChildAt(0).requestFocus();
+            return;
         }
+        if (dock == null || dock.getVisibility() != View.VISIBLE) {
+            // Dock 被关闭：焦点交给空焦点位，别留在不可见的控件上
+            clearDesktopFocus();
+        }
+    }
+
+    // ---------- 桌面控件显示 / 自动隐藏 ----------
+
+    /** 当前是否该显示桌面控件（显示方式为隐藏，或自动隐藏已到点时不显示） */
+    private boolean widgetsShown() {
+        if (WIDGET_MODE_HIDDEN.equals(widgetMode)) {
+            return false;
+        }
+        return !(WIDGET_MODE_AUTO.equals(widgetMode) && widgetAutoHidden);
+    }
+
+    private void applyWidgetVisibility() {
+        applyWidgetVisibility(false);
+    }
+
+    /**
+     * @param animate true 时用淡入淡出过渡（自动隐藏/恢复用）；
+     *                false 时立即生效（开关、显示方式切换、回到桌面时用）
+     */
+    private void applyWidgetVisibility(boolean animate) {
+        boolean shown = widgetsShown();
+        // 只在自动隐藏模式下做动画，常驻/隐藏方式的切换保持即时
+        boolean fade = animate && WIDGET_MODE_AUTO.equals(widgetMode);
+        setWidgetVisible(clockBox, widgetClock && shown, fade);
+        setWidgetVisible(weatherBox, widgetWeather && shown, fade);
+        setWidgetVisible(dock, widgetDock && shown, fade);
+        setWidgetVisible(wallpaperControls, widgetArrows && shown, fade);
+        setWidgetVisible(hintView, widgetDrawer && shown, fade);
+        if (!widgetDrawer && drawerOpen) {
+            closeDrawer();
+        }
+    }
+
+    /** 用 INVISIBLE 而不是 GONE：保留原有排版位置，隐藏/恢复时界面不跳动 */
+    private void setWidgetVisible(View v, boolean visible, boolean animate) {
+        if (v == null) {
+            return;
+        }
+        v.animate().cancel();
+        if (!animate) {
+            v.setAlpha(1f);
+            v.setTranslationY(0f);
+            v.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+            return;
+        }
+        if (visible) {
+            if (v.getVisibility() != View.VISIBLE) {
+                v.setVisibility(View.VISIBLE);
+                v.setAlpha(0f);
+                v.setTranslationY(-dp(WIDGET_FADE_OFFSET_DP));
+            }
+            v.animate().alpha(1f).translationY(0f)
+                    .setDuration(WIDGET_FADE_MS)
+                    .setInterpolator(OPEN_EASE)
+                    .start();
+        } else if (v.getVisibility() == View.VISIBLE) {
+            v.animate().alpha(0f).translationY(-dp(WIDGET_FADE_OFFSET_DP))
+                    .setDuration(WIDGET_FADE_MS)
+                    .setInterpolator(CLOSE_EASE)
+                    .withEndAction(new Runnable() {
+                        @Override
+                        public void run() {
+                            // 动画期间用户又按了键的话，不要把它重新藏起来
+                            if (!widgetsShown()) {
+                                v.setVisibility(View.INVISIBLE);
+                                v.setAlpha(1f);
+                                v.setTranslationY(0f);
+                            }
+                        }
+                    })
+                    .start();
+        }
+    }
+
+    /** 当前没有任何浮层/抽屉，才算桌面空闲 */
+    private boolean onDesktopIdle() {
+        return !remoteOpen && !managerOpen && !settingsOpen && !menuOpen && !drawerOpen;
+    }
+
+    private final Runnable widgetAutoHideTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!WIDGET_MODE_AUTO.equals(widgetMode) || widgetAutoHidden) {
+                return;
+            }
+            if (!onDesktopIdle()) {
+                // 浮层打开时不计空闲，等回到桌面再继续计时
+                handler.postDelayed(this, WIDGET_AUTO_HIDE_MS);
+                return;
+            }
+            widgetAutoHidden = true;
+            applyWidgetVisibility(true);
+            Log.i(TAG, "widgets auto hidden after " + (WIDGET_AUTO_HIDE_MS / 1000) + "s idle");
+        }
+    };
+
+    /** 任意按键/触摸后调用：恢复自动隐藏的控件，并重新开始空闲计时 */
+    private void resetWidgetAutoHide() {
+        handler.removeCallbacks(widgetAutoHideTick);
+        if (!WIDGET_MODE_AUTO.equals(widgetMode) || !onDesktopIdle()) {
+            return;
+        }
+        if (widgetAutoHidden) {
+            widgetAutoHidden = false;
+            applyWidgetVisibility(true);
+            View focused = getCurrentFocus();
+            if (dock != null && dock.getVisibility() == View.VISIBLE
+                    && (focused == null || !focused.isShown())) {
+                focusFirstDockItem();
+            }
+        }
+        handler.postDelayed(widgetAutoHideTick, WIDGET_AUTO_HIDE_MS);
+    }
+
+    private void setWidgetMode(String mode) {
+        if (mode == null) {
+            return;
+        }
+        widgetMode = mode;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_WIDGET_MODE, mode).apply();
+        widgetAutoHidden = false;
+        handler.removeCallbacks(widgetAutoHideTick);
+        applyWidgetVisibility();
+        updateWidgetModeOptions();
+        resetWidgetAutoHide();
+        Log.i(TAG, "widget mode: " + mode);
+    }
+
+    private void setWidgetFlag(String key, boolean value) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(key, value).apply();
     }
 
     /** 取消桌面图标选中：把焦点交给一个不可见的空焦点，Dock 图标全部无遮罩 */
@@ -7285,6 +8035,8 @@ public class LauncherActivity extends Activity {
         super.onUserInteraction();
         // 用户再次操作遥控器后恢复正常自动聚焦
         desktopFocusCleared = false;
+        // 自动隐藏模式下，任意按键/触摸都重新显示控件并重新计时
+        resetWidgetAutoHide();
     }
 
     // ---------- 应用列表 ----------

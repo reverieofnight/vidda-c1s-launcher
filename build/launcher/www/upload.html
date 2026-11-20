@@ -12,7 +12,7 @@
     background: #0b1017; color: #e8eef6;
     font: 15px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   }
-  .wrap { max-width: 1080px; margin: 0 auto; }
+  .wrap { max-width: none; margin: 0 auto; }
   h1 { font-size: 22px; margin: 0 0 4px; font-weight: 700; }
   .sub { color: #8fa0b3; font-size: 13px; margin-bottom: 22px; }
   .card { background: #131b26; border: 1px solid #1e2a3a; border-radius: 14px; padding: 18px; }
@@ -33,13 +33,49 @@
   .head { display: flex; align-items: baseline; justify-content: space-between; margin: 28px 0 12px; }
   .head h2 { font-size: 16px; margin: 0; font-weight: 600; }
   .head span { color: #7f8fa3; font-size: 13px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
-  .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; }
-  .pager button { flex: 0 0 auto; padding: 8px 20px; border-radius: 999px; }
-  .pager .pinfo { font-size: 13px; color: #8fa0b3; }
+  /* 卡片固定 250px 宽，列数随窗口自适应；行数由脚本按窗口高度计算 */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, 250px); justify-content: start; gap: 20px; }
+  .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 18px; }
+  .pager button { flex: 0 0 auto; padding: 8px 14px; border-radius: 999px; min-width: 42px; }
+  .pager button.on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+  .pager .pinfo { font-size: 13px; color: #8fa0b3; padding: 0 4px; }
+  .meta { padding: 8px 10px 10px; }
+  /* 「设为当前」「删除」水平排列 */
+  .ops { flex-direction: row; gap: 8px; }
+  .ops button { padding: 7px 8px; font-size: 12px; }
+  /* 手机上：两列自适应、间距收紧、按钮加大触摸区域；分页交给连续滚动 */
+  @media (max-width: 640px) {
+    body { padding: 16px 14px 40px; }
+    h1 { font-size: 19px; }
+    .sub { margin-bottom: 16px; }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .ops { gap: 6px; }
+    .ops button { padding: 10px 6px; }
+    .pager { margin-top: 12px; }
+  }
+  @media (max-width: 380px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+  /* 上传区：左侧按文件、右侧按文件夹 */
+  .drops { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .drops .drop { padding: 26px 16px; }
+  @media (max-width: 640px) { .drops { grid-template-columns: 1fr; } }
   .item { background: #131b26; border: 1px solid #1e2a3a; border-radius: 12px; overflow: hidden; }
   .item.cur { border-color: #4c8dff; }
   .thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: #0f1620; }
+  .thumbWrap { position: relative; }
+  /* 文件名 + 大小浮在图片底部：渐变底 + 单行省略，字号沿用原来的大小 */
+  .thumbWrap .cap {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 20px 8px 6px;
+    background: linear-gradient(to top, rgba(0,0,0,.82), rgba(0,0,0,0));
+  }
+  .thumbWrap .name {
+    color: #fff; font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    word-break: normal;
+  }
+  .thumbWrap .size { color: rgba(255,255,255,.72); font-size: 12px; margin-top: 1px; }
   .meta { padding: 10px 12px 12px; }
   .name { font-size: 13px; word-break: break-all; color: #dbe6f2; }
   .size { font-size: 12px; color: #7f8fa3; margin-top: 2px; }
@@ -79,16 +115,20 @@
   </div>
 
   <div class="card">
-    <div class="drop" id="drop" tabindex="0">
-      <span id="dropTitle">点击选择图片，或把文件拖到这里</span><br>
-      <b id="dropFormats">支持多张 JPG / PNG / WebP</b>
-      <small id="dropHint">图片会直接存进电视本机，并在电视上参与 4K 静态壁纸管线</small>
+    <div class="drops">
+      <div class="drop" id="drop" tabindex="0">
+        <span id="dropTitle">点击选择图片，或把文件拖到这里</span><br>
+        <b id="dropFormats">支持多张 JPG / PNG / WebP</b>
+        <small id="dropHint">图片会直接存进电视本机，并在电视上参与 4K 静态壁纸管线</small>
+      </div>
+      <div class="drop" id="folderDrop" tabindex="0">
+        <span id="folderTitle">点击选择文件夹，批量导入</span><br>
+        <b>自动遍历子目录</b>
+        <small>不保留目录结构，按文件夹为单位一次上传</small>
+      </div>
     </div>
     <input type="file" id="file" accept="image/*" multiple hidden>
     <input type="file" id="folder" webkitdirectory directory multiple hidden>
-    <button type="button" id="pickFolder" style="width:100%;margin-top:12px;">
-      选择文件夹批量导入（自动遍历子目录，不保留目录结构）
-    </button>
     <div id="progress"></div>
   </div>
 
@@ -110,10 +150,16 @@
   var drop = document.getElementById('drop');
   var input = document.getElementById('file');
   var folderInput = document.getElementById('folder');
-  var pickFolder = document.getElementById('pickFolder');
+  var folderDrop = document.getElementById('folderDrop');
   var prog = document.getElementById('progress');
   var pager = document.getElementById('pager');
-  var PAGE_SIZE = 24;
+  /* 每页数量 = 实际列数 × 窗口高度能放下的行数；列数由 CSS 决定，渲染后实测 */
+  var CARD_W = 250;       // 卡片固定宽度，需与 CSS 的 .grid 列宽一致
+  var MIN_GAP = 20;       // 卡片间隙最小值，需与 CSS 的 .grid gap 一致
+  var cols = 9, rows = 1, PAGE_SIZE = 9, cardHeight = 0;
+  var CHUNK = 24;         // 手机端触底加载每次追加的卡片数
+  var shownCount = 0;     // 手机端已经渲染出来的卡片数
+  var mobileItems = [];   // 手机端当前列表，便于继续追加
   var page = 0;
   var toastEl = document.getElementById('toast');
   var toastTimer = null;
@@ -137,6 +183,8 @@
   function setType(type) {
     curType = type;
     page = 0;
+    shownCount = 0;
+    mobileItems = [];
     var video = type === 'video';
     tabImage.className = video ? '' : 'on';
     tabVideo.className = video ? 'on' : '';
@@ -171,122 +219,313 @@
     });
   }
 
+  /** 列间距最小 12px；把一行用剩的宽度均分进间距，让最右列贴齐右边界 */
+  function applyGridGap() {
+    // 用亚像素宽度，clientWidth 取整会多出半像素导致横向溢出
+    var gridW = grid.getBoundingClientRect().width;
+    if (!gridW) {
+      return;
+    }
+    // 窄屏（手机）交给 media query 的流式列布局
+    if (window.innerWidth <= 640) {
+      grid.style.gridTemplateColumns = '';
+      grid.style.columnGap = '';
+      return;
+    }
+    var n = Math.max(1, Math.floor((gridW + MIN_GAP) / (CARD_W + MIN_GAP)));
+    // 显式写死列数：auto-fill 会把变大后的 gap 也算进列宽，导致少排一列
+    grid.style.gridTemplateColumns = 'repeat(' + n + ', ' + CARD_W + 'px)';
+    if (n < 2) {
+      grid.style.columnGap = MIN_GAP + 'px';
+      return;
+    }
+    // 向下取整到 0.01px：总宽略小于容器，避免亚像素溢出
+    var gap = Math.floor(
+      (MIN_GAP + (gridW - (n * CARD_W + (n - 1) * MIN_GAP)) / (n - 1)) * 100) / 100;
+    grid.style.columnGap = gap.toFixed(2) + 'px';
+  }
+
+  /** 按窗口高度计算行数，每页 = 实测列数 × 行数 */
+  function computePageSize() {
+    // 只按窗口高度能放下几行来算，不再扣除标题和上传区占用的高度
+    var h = cardHeight || 210;
+    rows = Math.max(1, Math.floor((window.innerHeight + MIN_GAP) / (h + MIN_GAP)));
+    PAGE_SIZE = Math.max(1, cols * rows);
+  }
+
+  /** 读取 CSS 实际排出来的列数 */
+  function measureCols() {
+    var tpl = window.getComputedStyle(grid).gridTemplateColumns;
+    if (!tpl || tpl === 'none') {
+      return cols;
+    }
+    var n = tpl.split(' ').filter(function (v) { return v; }).length;
+    return n > 0 ? n : cols;
+  }
+
+  var resizeTimer = null;
+  var lastCompact = window.innerWidth <= 640;
+  window.addEventListener('resize', function () {
+    if (resizeTimer) {
+      clearTimeout(resizeTimer);
+    }
+    // 防抖：拖拽窗口时只按最终尺寸重排一次
+    resizeTimer = setTimeout(function () {
+      // 跨过手机/桌面断点时重置分批进度，避免把宽屏的进度带进手机视图
+      var compactNow = window.innerWidth <= 640;
+      if (compactNow !== lastCompact) {
+        lastCompact = compactNow;
+        shownCount = 0;
+        mobileItems = [];
+      }
+      render(lastData);
+    }, 200);
+  });
+
   function render(data) {
     lastData = data || { items: [] };
+    applyGridGap();
     var all = lastData.items || [];
     var items = all.filter(function (it) {
       return (it.type === 'video' ? 'video' : 'image') === curType;
     });
     var current = curType === 'video' ? lastData.currentVideo : lastData.current;
-    var pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    // 手机端不分页：一列/两列卡片本来就要滚动，分页只会多出翻页操作
+    var compact = window.innerWidth <= 640;
+    var pages = compact ? 1 : Math.max(1, Math.ceil(items.length / PAGE_SIZE));
     if (page > pages - 1) page = pages - 1;
     if (page < 0) page = 0;
     var start = page * PAGE_SIZE;
-    var pageItems = items.slice(start, start + PAGE_SIZE);
+    var pageItems = compact ? items : items.slice(start, start + PAGE_SIZE);
     summary.textContent = items.length + (curType === 'video' ? ' 个视频' : ' 张') +
       (pages > 1 ? ' · 第 ' + (page + 1) + '/' + pages + ' 页' : '') +
       (current ? ' · 当前：' + current : '');
     empty.textContent = curType === 'video' ? '还没有动态壁纸' : '还没有静态壁纸';
     empty.style.display = items.length ? 'none' : 'block';
     grid.innerHTML = '';
-    pageItems.forEach(function (it) {
-      var card = document.createElement('div');
-      card.className = 'item' + (it.current ? ' cur' : '');
-
-      var img = document.createElement('img');
-      img.className = 'thumb';
-      img.loading = 'lazy';
-      var tq = '&type=' + curType;
-      img.src = '/api/thumb?name=' + encodeURIComponent(it.name) + tq;
-      card.appendChild(img);
-
-      var meta = document.createElement('div');
-      meta.className = 'meta';
-
-      var name = document.createElement('div');
-      name.className = 'name';
-      name.textContent = it.name;
-      if (it.current) {
-        var badge = document.createElement('span');
-        badge.className = 'badge';
-        badge.textContent = '当前';
-        name.appendChild(badge);
+    if (compact) {
+      // 手机端分批渲染：先画一批，触底再追加，避免几百张卡片一次性铺满
+      mobileItems = items;
+      var count = Math.min(Math.max(shownCount, CHUNK), items.length);
+      for (var i = 0; i < count; i++) {
+        grid.appendChild(makeCard(items[i]));
       }
-      meta.appendChild(name);
-
-      var size = document.createElement('div');
-      size.className = 'size';
-      size.textContent = fmtSize(it.size) + (curType === 'video' ? ' · 循环播放' : '');
-      meta.appendChild(size);
-
-      var ops = document.createElement('div');
-      ops.className = 'ops';
-
-      var applyBtn = document.createElement('button');
-      applyBtn.className = it.current ? 'ghost' : 'primary';
-      applyBtn.textContent = it.current ? '当前壁纸' : '设为当前';
-      applyBtn.disabled = it.current;
-      if (it.current) {
-        applyBtn.title = '已经是当前壁纸';
+      shownCount = count;
+    } else {
+      pageItems.forEach(function (it) {
+        grid.appendChild(makeCard(it));
+      });
+    }
+    // 首次渲染后按实测的列数和卡片高度校正每页数量，保证首屏正好放满
+    if (grid.firstElementChild) {
+      var measuredCols = measureCols();
+      var measuredH = Math.round(grid.firstElementChild.getBoundingClientRect().height);
+      var colsChanged = measuredCols !== cols;
+      var heightChanged = measuredH > 40 && Math.abs(measuredH - cardHeight) > 4;
+      if (colsChanged || heightChanged) {
+        cols = measuredCols;
+        if (measuredH > 40) {
+          cardHeight = measuredH;
+        }
+        computePageSize();
+        render(lastData);
+        return;
       }
-      applyBtn.onclick = function () {
-        applyBtn.disabled = true;
-        api('/api/apply?name=' + encodeURIComponent(it.name) + tq, { method: 'POST' })
-          .then(function (r) {
-            if (r.ok) { toast('已切换为 ' + it.name); refresh(); }
-            else { toast('切换失败'); applyBtn.disabled = false; }
-          });
-      };
-      ops.appendChild(applyBtn);
-
-      var delBtn = document.createElement('button');
-      delBtn.className = 'danger';
-      delBtn.textContent = '删除';
-      delBtn.onclick = function () {
-        var msg = '删除' + typeLabel(curType) + '「' + it.name + '」？';
-        if (it.current) msg = '这是当前壁纸，删除后桌面会置黑，直到重新设置壁纸，继续？';
-        if (!confirm(msg)) return;
-        delBtn.disabled = true;
-        api('/api/delete?name=' + encodeURIComponent(it.name) + tq, { method: 'POST' })
-          .then(function (r) {
-            if (r.ok) { toast('已删除'); refresh(); }
-            else { toast(r.error || '删除失败'); delBtn.disabled = false; }
-          });
-      };
-      ops.appendChild(delBtn);
-
-      meta.appendChild(ops);
-      card.appendChild(meta);
-      grid.appendChild(card);
-    });
+    }
     renderPager(pages);
+    if (compact) {
+      fillViewport();
+    }
   }
+
+  /** 生成单张壁纸卡片 */
+  function makeCard(it) {
+    var card = document.createElement('div');
+    card.className = 'item' + (it.current ? ' cur' : '');
+
+    var img = document.createElement('img');
+    img.className = 'thumb';
+    img.loading = 'lazy';
+    var tq = '&type=' + curType;
+    img.src = '/api/thumb?name=' + encodeURIComponent(it.name) + tq;
+
+    // 文件名浮在缩略图底部，和电视端壁纸管理页一致
+    var thumbWrap = document.createElement('div');
+    thumbWrap.className = 'thumbWrap';
+    thumbWrap.appendChild(img);
+
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+
+    var name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = it.name;
+    if (it.current) {
+      var badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = '当前';
+      name.appendChild(badge);
+    }
+    // 大小信息跟在文件名下面，一起浮在图片上
+    var size = document.createElement('div');
+    size.className = 'size';
+    size.textContent = fmtSize(it.size) + (curType === 'video' ? ' · 循环播放' : '');
+
+    var cap = document.createElement('div');
+    cap.className = 'cap';
+    cap.appendChild(name);
+    cap.appendChild(size);
+    thumbWrap.appendChild(cap);
+    card.appendChild(thumbWrap);
+
+    var ops = document.createElement('div');
+    ops.className = 'ops';
+
+    var applyBtn = document.createElement('button');
+    applyBtn.className = it.current ? 'ghost' : 'primary';
+    applyBtn.textContent = it.current ? '当前壁纸' : '设为当前';
+    applyBtn.disabled = it.current;
+    if (it.current) {
+      applyBtn.title = '已经是当前壁纸';
+    }
+    applyBtn.onclick = function () {
+      applyBtn.disabled = true;
+      api('/api/apply?name=' + encodeURIComponent(it.name) + tq, { method: 'POST' })
+        .then(function (r) {
+          if (r.ok) { toast('已切换为 ' + it.name); refresh(); }
+          else { toast('切换失败'); applyBtn.disabled = false; }
+        });
+    };
+    ops.appendChild(applyBtn);
+
+    var delBtn = document.createElement('button');
+    delBtn.className = 'danger';
+    delBtn.textContent = '删除';
+    delBtn.onclick = function () {
+      var msg = '删除' + typeLabel(curType) + '「' + it.name + '」？';
+      if (it.current) msg = '这是当前壁纸，删除后桌面会置黑，直到重新设置壁纸，继续？';
+      if (!confirm(msg)) return;
+      delBtn.disabled = true;
+      api('/api/delete?name=' + encodeURIComponent(it.name) + tq, { method: 'POST' })
+        .then(function (r) {
+          if (r.ok) { toast('已删除'); refresh(); }
+          else { toast(r.error || '删除失败'); delBtn.disabled = false; }
+        });
+    };
+    ops.appendChild(delBtn);
+
+    meta.appendChild(ops);
+    card.appendChild(meta);
+    return card;
+  }
+
+  /** 文档底部还剩不到这么多像素时，就该追加下一批卡片 */
+  function nearBottom() {
+    var doc = document.documentElement;
+    var scrollTop = window.pageYOffset || doc.scrollTop || 0;
+    return doc.scrollHeight - (window.innerHeight + scrollTop) < 400;
+  }
+
+  /** 追加一批卡片（手机端触底加载的最小单位） */
+  function appendNextChunk() {
+    var next = mobileItems.slice(shownCount, shownCount + CHUNK);
+    shownCount += next.length;
+    next.forEach(function (it) {
+      grid.appendChild(makeCard(it));
+    });
+  }
+
+  /** 首屏没被卡片填满时继续追加，避免底部留白还要等滚动 */
+  function fillViewport() {
+    var guard = 0;
+    while (shownCount < mobileItems.length && guard++ < 20 && nearBottom()) {
+      appendNextChunk();
+    }
+  }
+
+  var scrollTick = false;
+  window.addEventListener('scroll', function () {
+    if (scrollTick || window.innerWidth > 640) {
+      return;
+    }
+    scrollTick = true;
+    window.requestAnimationFrame(function () {
+      scrollTick = false;
+      if (window.innerWidth <= 640 && shownCount < mobileItems.length && nearBottom()) {
+        appendNextChunk();
+      }
+    });
+  }, { passive: true });
 
   function renderPager(pages) {
     pager.innerHTML = '';
     if (pages <= 1) return;
-    function makeBtn(label, target, disabled) {
+    function go(target) {
+      page = Math.max(0, Math.min(pages - 1, target));
+      render(lastData);
+      document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function makeBtn(label, target) {
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = label;
-      btn.disabled = disabled;
-      btn.onclick = function () {
-        page = target;
-        render(lastData);
-        document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      };
+      if (target === page) {
+        btn.className = 'on';
+        btn.disabled = true;
+      } else if (target < 0 || target >= pages) {
+        btn.disabled = true;
+      } else {
+        btn.onclick = function () { go(target); };
+      }
       return btn;
     }
-    pager.appendChild(makeBtn('上一页', page - 1, page === 0));
-    var info = document.createElement('span');
-    info.className = 'pinfo';
-    info.textContent = (page + 1) + ' / ' + pages;
-    pager.appendChild(info);
-    pager.appendChild(makeBtn('下一页', page + 1, page === pages - 1));
+    pager.appendChild(makeBtn('上一页', page - 1));
+    // 页码窗口：首页、末页 + 当前页前后各一页，中间用 … 省略
+    var shown = [];
+    for (var i = 0; i < pages; i++) {
+      if (i === 0 || i === pages - 1 || Math.abs(i - page) <= 1) {
+        shown.push(i);
+      }
+    }
+    var prev = -2;
+    shown.forEach(function (i) {
+      if (i - prev > 1) {
+        var dots = document.createElement('span');
+        dots.className = 'pinfo';
+        dots.textContent = '…';
+        pager.appendChild(dots);
+      }
+      pager.appendChild(makeBtn(String(i + 1), i));
+      prev = i;
+    });
+    pager.appendChild(makeBtn('下一页', page + 1));
   }
 
+  /** 列表签名：数量 + 每项 name/size/mtime/current，用于跳过无变化的重复渲染 */
+  function listSig(d) {
+    var items = d.items || [];
+    var sig = items.length + '|' + (d.current || '') + '|' + (d.currentVideo || '');
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      sig += '|' + it.name + ',' + it.size + ',' + it.mtime + ',' + (it.current ? 1 : 0);
+    }
+    return sig;
+  }
+
+  var lastSig = '', lastFailed = false;
+
   function refresh() {
-    api('/api/list').then(render).catch(function () {
+    api('/api/list').then(function (d) {
+      // 数据没变就不重建 DOM：手机端几十上百张卡片重建一次很贵
+      var sig = listSig(d || {});
+      if (sig === lastSig && !lastFailed) {
+        return;
+      }
+      lastSig = sig;
+      lastFailed = false;
+      render(d);
+    }).catch(function () {
+      lastFailed = true;
       summary.textContent = '连接断开';
     });
   }
@@ -397,7 +636,10 @@
     if (input.files && input.files.length) uploadFiles(input.files);
     input.value = '';
   });
-  pickFolder.addEventListener('click', function () { folderInput.click(); });
+  folderDrop.addEventListener('click', function () { folderInput.click(); });
+  folderDrop.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); folderInput.click(); }
+  });
   folderInput.addEventListener('change', function () {
     if (folderInput.files && folderInput.files.length) uploadFiles(folderInput.files);
     folderInput.value = '';
@@ -414,6 +656,7 @@
 
   tabImage.addEventListener('click', function () { setType('image'); });
   tabVideo.addEventListener('click', function () { setType('video'); });
+  computePageSize();
   setType('image');
   refresh();
   setInterval(refresh, 10000);
