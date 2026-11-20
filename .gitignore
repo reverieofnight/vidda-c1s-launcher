@@ -16,3 +16,7 @@
 *.log
 Thumbs.db
 .DS_Store
+
+# 编辑器/工具：Trae 工作区配置、scrcpy 发布包
+/.trae/
+/scrcpy-*
