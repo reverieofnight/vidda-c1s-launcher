@@ -24,13 +24,19 @@
   .drop b { color: #4c8dff; }
   .drop small { display: block; color: #7f8fa3; margin-top: 6px; }
   #progress { margin-top: 14px; display: none; }
+  #progress .phead { font-size: 13px; color: #dbe6f2; }
+  #progress .plist { max-height: 132px; overflow-y: auto; overscroll-behavior: contain; margin-top: 2px; padding-right: 4px; }
   .prow { margin-top: 8px; font-size: 13px; color: #a8b8c9; }
+  .prow .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar { height: 6px; background: #1b2735; border-radius: 4px; overflow: hidden; margin-top: 4px; }
   .bar > i { display: block; height: 100%; width: 0; background: #4c8dff; transition: width .15s; }
   .head { display: flex; align-items: baseline; justify-content: space-between; margin: 28px 0 12px; }
   .head h2 { font-size: 16px; margin: 0; font-weight: 600; }
   .head span { color: #7f8fa3; font-size: 13px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+  .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; }
+  .pager button { flex: 0 0 auto; padding: 8px 20px; border-radius: 999px; }
+  .pager .pinfo { font-size: 13px; color: #8fa0b3; }
   .item { background: #131b26; border: 1px solid #1e2a3a; border-radius: 12px; overflow: hidden; }
   .item.cur { border-color: #4c8dff; }
   .thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: #0f1620; }
@@ -79,6 +85,10 @@
       <small id="dropHint">图片会直接存进电视本机，并在电视上参与 4K 静态壁纸管线</small>
     </div>
     <input type="file" id="file" accept="image/*" multiple hidden>
+    <input type="file" id="folder" webkitdirectory directory multiple hidden>
+    <button type="button" id="pickFolder" style="width:100%;margin-top:12px;">
+      选择文件夹批量导入（自动遍历子目录，不保留目录结构）
+    </button>
     <div id="progress"></div>
   </div>
 
@@ -87,6 +97,7 @@
     <span id="summary">加载中…</span>
   </div>
   <div class="grid" id="grid"></div>
+  <div class="pager" id="pager"></div>
   <div class="empty" id="empty" style="display:none">还没有壁纸</div>
 </div>
 <div class="toast" id="toast"></div>
@@ -98,7 +109,12 @@
   var empty = document.getElementById('empty');
   var drop = document.getElementById('drop');
   var input = document.getElementById('file');
+  var folderInput = document.getElementById('folder');
+  var pickFolder = document.getElementById('pickFolder');
   var prog = document.getElementById('progress');
+  var pager = document.getElementById('pager');
+  var PAGE_SIZE = 24;
+  var page = 0;
   var toastEl = document.getElementById('toast');
   var toastTimer = null;
   var tabImage = document.getElementById('tabImage');
@@ -120,10 +136,12 @@
 
   function setType(type) {
     curType = type;
+    page = 0;
     var video = type === 'video';
     tabImage.className = video ? '' : 'on';
     tabVideo.className = video ? 'on' : '';
     input.accept = video ? 'video/mp4,video/x-matroska,video/webm,video/quicktime,.mp4,.mkv,.webm,.mov,.m4v' : 'image/*';
+    folderInput.accept = input.accept;
     dropTitle.textContent = video ? '点击选择视频，或把文件拖到这里'
       : '点击选择图片，或把文件拖到这里';
     dropFormats.textContent = video ? '支持 MP4 / MKV / WebM / MOV，单个文件最大 600 MB'
@@ -160,12 +178,18 @@
       return (it.type === 'video' ? 'video' : 'image') === curType;
     });
     var current = curType === 'video' ? lastData.currentVideo : lastData.current;
+    var pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    if (page > pages - 1) page = pages - 1;
+    if (page < 0) page = 0;
+    var start = page * PAGE_SIZE;
+    var pageItems = items.slice(start, start + PAGE_SIZE);
     summary.textContent = items.length + (curType === 'video' ? ' 个视频' : ' 张') +
+      (pages > 1 ? ' · 第 ' + (page + 1) + '/' + pages + ' 页' : '') +
       (current ? ' · 当前：' + current : '');
     empty.textContent = curType === 'video' ? '还没有动态壁纸' : '还没有静态壁纸';
     empty.style.display = items.length ? 'none' : 'block';
     grid.innerHTML = '';
-    items.forEach(function (it) {
+    pageItems.forEach(function (it) {
       var card = document.createElement('div');
       card.className = 'item' + (it.current ? ' cur' : '');
 
@@ -219,12 +243,14 @@
       delBtn.className = 'danger';
       delBtn.textContent = '删除';
       delBtn.onclick = function () {
-        if (!confirm('删除' + typeLabel(curType) + '「' + it.name + '」？')) return;
+        var msg = '删除' + typeLabel(curType) + '「' + it.name + '」？';
+        if (it.current) msg = '这是当前壁纸，删除后桌面会置黑，直到重新设置壁纸，继续？';
+        if (!confirm(msg)) return;
         delBtn.disabled = true;
         api('/api/delete?name=' + encodeURIComponent(it.name) + tq, { method: 'POST' })
           .then(function (r) {
             if (r.ok) { toast('已删除'); refresh(); }
-            else { toast('删除失败（可能是当前壁纸）'); delBtn.disabled = false; }
+            else { toast(r.error || '删除失败'); delBtn.disabled = false; }
           });
       };
       ops.appendChild(delBtn);
@@ -233,6 +259,30 @@
       card.appendChild(meta);
       grid.appendChild(card);
     });
+    renderPager(pages);
+  }
+
+  function renderPager(pages) {
+    pager.innerHTML = '';
+    if (pages <= 1) return;
+    function makeBtn(label, target, disabled) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.disabled = disabled;
+      btn.onclick = function () {
+        page = target;
+        render(lastData);
+        document.getElementById('listTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+      return btn;
+    }
+    pager.appendChild(makeBtn('上一页', page - 1, page === 0));
+    var info = document.createElement('span');
+    info.className = 'pinfo';
+    info.textContent = (page + 1) + ' / ' + pages;
+    pager.appendChild(info);
+    pager.appendChild(makeBtn('下一页', page + 1, page === pages - 1));
   }
 
   function refresh() {
@@ -241,11 +291,12 @@
     });
   }
 
-  function uploadOne(file, index, total) {
+  function uploadOne(file, index, total, host) {
     return new Promise(function (resolve) {
       var row = document.createElement('div');
       row.className = 'prow';
       var label = document.createElement('div');
+      label.className = 'pname';
       label.textContent = '(' + (index + 1) + '/' + total + ') ' + file.name + ' · 0%';
       var bar = document.createElement('div');
       bar.className = 'bar';
@@ -253,8 +304,8 @@
       bar.appendChild(fill);
       row.appendChild(label);
       row.appendChild(bar);
-      prog.appendChild(row);
-      prog.style.display = 'block';
+      host.appendChild(row);
+      host.scrollTop = host.scrollHeight;
 
       var xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/upload?name=' + encodeURIComponent(file.name)
@@ -266,22 +317,24 @@
         fill.style.width = pct + '%';
       };
       xhr.onload = function () {
-        var ok = false, msg = '上传失败';
+        var ok = false, msg = '上传失败', dup = false;
         try {
           var r = JSON.parse(xhr.responseText);
           ok = !!r.ok;
-          if (ok) msg = '已上传 ' + r.name;
+          dup = !!r.duplicate;
+          if (ok) msg = dup ? '已存在，已忽略' : '已上传 ' + r.name;
           else msg = r.error || msg;
         } catch (e) { }
-        label.textContent = (ok ? '✓ ' : '✗ ') + file.name + (ok ? '' : ' · ' + msg);
+        label.textContent = (ok ? (dup ? '= ' : '✓ ') : '✗ ') + file.name
+          + (dup ? ' · ' + msg : (ok ? '' : ' · ' + msg));
         fill.style.width = '100%';
         fill.style.background = ok ? '#22c55e' : '#ef4444';
-        resolve(ok);
+        resolve(dup ? 'dup' : (ok ? 'ok' : 'fail'));
       };
       xhr.onerror = function () {
         label.textContent = '✗ ' + file.name + ' · 网络错误';
         fill.style.background = '#ef4444';
-        resolve(false);
+        resolve('fail');
       };
       xhr.send(file);
     });
@@ -293,19 +346,45 @@
       if (video) {
         return /^video\//.test(f.type) || isVideoName(f.name);
       }
-      return /^image\//.test(f.type);
+      return /^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name || '');
     });
     if (!list.length) { toast(video ? '请选择视频文件' : '请选择图片文件'); return; }
-    var okCount = 0;
+    prog.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'phead';
+    var listEl = document.createElement('div');
+    listEl.className = 'plist';
+    prog.appendChild(head);
+    prog.appendChild(listEl);
+    prog.style.display = 'block';
+    var okCount = 0, dupCount = 0, failCount = 0, doneCount = 0;
+    var total = list.length;
+    function summaryText(done) {
+      var s = '导入中 ' + done + '/' + total + ' · 成功 ' + okCount;
+      if (dupCount) s += ' · 已存在 ' + dupCount;
+      if (failCount) s += ' · 失败 ' + failCount;
+      return s;
+    }
+    head.textContent = summaryText(0);
     var chain = Promise.resolve();
     list.forEach(function (f, i) {
       chain = chain.then(function () {
-        return uploadOne(f, i, list.length).then(function (ok) { if (ok) okCount++; });
+        return uploadOne(f, i, total, listEl).then(function (st) {
+          if (st === 'ok') okCount++;
+          else if (st === 'dup') dupCount++;
+          else failCount++;
+          doneCount++;
+          head.textContent = summaryText(doneCount);
+        });
       });
     });
     chain.then(function () {
-      toast('完成：成功 ' + okCount + ' / ' + list.length);
-      setTimeout(function () { prog.innerHTML = ''; prog.style.display = 'none'; }, 2500);
+      var msg = '完成：导入 ' + okCount + ' 个';
+      if (dupCount) msg += '，已存在忽略 ' + dupCount + ' 个';
+      if (failCount) msg += '，失败 ' + failCount + ' 个';
+      head.textContent = msg;
+      toast(msg);
+      setTimeout(function () { prog.innerHTML = ''; prog.style.display = 'none'; }, 4000);
       refresh();
     });
   }
@@ -317,6 +396,11 @@
   input.addEventListener('change', function () {
     if (input.files && input.files.length) uploadFiles(input.files);
     input.value = '';
+  });
+  pickFolder.addEventListener('click', function () { folderInput.click(); });
+  folderInput.addEventListener('change', function () {
+    if (folderInput.files && folderInput.files.length) uploadFiles(folderInput.files);
+    folderInput.value = '';
   });
   ['dragenter', 'dragover'].forEach(function (t) {
     drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('hover'); });

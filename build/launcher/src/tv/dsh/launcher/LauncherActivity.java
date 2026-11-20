@@ -67,6 +67,7 @@ import android.widget.Toast;
 import android.widget.VideoView;
 
 import java.io.BufferedReader;
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -117,8 +118,11 @@ public class LauncherActivity extends Activity {
     private static final String KEY_BG_ORDER = "background_order";
     /** 导入壁纸时申请存储读取权限 */
     private static final int REQ_READ_STORAGE = 4101;
-    private static final int COLUMNS = 7;
-    private static final int DOCK_SHOW = 7;
+    /** 桌面设置：图标大小预设（small / medium / large） */
+    private static final String KEY_ICON_SIZE = "icon_size";
+    private static final String ICON_SIZE_SMALL = "small";
+    private static final String ICON_SIZE_MEDIUM = "medium";
+    private static final String ICON_SIZE_LARGE = "large";
     /** 4K 壁纸过渡演示：两张素材每 10 秒切一次，切换瞬间用 1080p 快照交叉淡化 */
     /** UI 壁纸显示/隐藏的快速淡化时长 */
     private static final long REVEAL_FADE_MS = 250L;
@@ -140,7 +144,11 @@ public class LauncherActivity extends Activity {
     private static final String KEY_SLIDESHOW = "slideshow_enabled";
     private static final String KEY_SLIDESHOW_SEC = "slideshow_interval_sec";
     private static final String KEY_SLIDESHOW_FADE = "slideshow_fade";
+    /** 幻灯片播放顺序：false=顺序，true=随机 */
+    private static final String KEY_SLIDESHOW_RANDOM = "slideshow_random";
     private static final String KEY_VIDEO_MUTED = "video_muted";
+    /** 远程导入：关闭页面后是否继续保持 HTTP 服务；默认关闭 */
+    private static final String KEY_REMOTE_KEEP = "remote_keep_running";
     private static final int[] SLIDESHOW_STEPS = {10, 30, 60, 300, 600, 1800};
     /** UI 壁纸相对视频 plane 的 1px 对齐微调 */
     private static final float WALLPAPER_NUDGE_X = 1f;
@@ -150,10 +158,14 @@ public class LauncherActivity extends Activity {
     private static final String VIDEO_BG_DIR = "backgrounds_video";
     private static final String KEY_VIDEO_BACKGROUND = "current_video_background";
     private static final String KEY_WALLPAPER_TYPE = "wallpaper_type";
+    /** 用户主动删掉当前壁纸后置为「无壁纸（黑屏）」，直到重新设置壁纸 */
+    private static final String KEY_WALLPAPER_CLEARED = "wallpaper_cleared";
     private static final String TYPE_IMAGE = "image";
     private static final String TYPE_VIDEO = "video";
     private static final int MANAGER_IMAGES = 0;
     private static final int MANAGER_VIDEOS = 1;
+    /** 壁纸管理网格每页数量：6 列 × 3 行，正好一屏，翻页即可换一整屏 */
+    private static final int MANAGER_PAGE_SIZE = 18;
     /** 单个视频壁纸允许的最大体积 */
     private static final long VIDEO_MAX_BYTES = 600L * 1024L * 1024L;
 
@@ -162,18 +174,22 @@ public class LauncherActivity extends Activity {
     private static final String FOUR_K_CACHE_DIR = "4k_cache";
     private static final int FOUR_K_W = 3840;
     private static final int FOUR_K_H = 2160;
-    private static final int FOUR_K_ENCODE_FRAMES = 2;
+    private static final int FOUR_K_ENCODE_FRAMES = 3;
     /** 编码参数版本；改颜色/编码设置时递增，旧缓存下次启动自动清掉 */
-    private static final String FOUR_K_CACHE_VERSION = "v4";
+    private static final String FOUR_K_CACHE_VERSION = "v6";
     /** 先切 UI 层壁纸，4K 视频就绪后再等 1 秒，无动画隐藏 UI 层 */
     /** 4K 模式下 UI 预览层的交叉淡化时长 */
     private static final long FOUR_K_UI_CROSSFADE_MS = 1000L;
     /** 首帧渲染回调后给合成器一点时间，避免揭盖瞬间黑一帧 */
     private static final long FOUR_K_FRAME_SETTLE_MS = 150L;
+    /** 静态壁纸首帧上屏后，等后续几帧覆盖掉解码器切换瞬间的错帧再揭盖 */
+    private static final long FOUR_K_STATIC_SETTLE_MS = 350L;
     /** 静态壁纸首帧上屏后，再过这么久主动暂停，把这一帧留在 surface 上 */
-    private static final long FOUR_K_PAUSE_AFTER_MS = 600L;
+    private static final long FOUR_K_PAUSE_AFTER_MS = 700L;
     /** 硬切模式：UI 预览画出后 100ms 再切视频，避免点击瞬间黑 */
     private static final long FOUR_K_VIDEO_SWITCH_MS = 100L;
+    /** 视频层延迟启动：UI 立即换图，用户停止操作这么久后才加载视频，避免频繁重配闪屏 */
+    private static final long FOUR_K_SWITCH_DEBOUNCE_MS = 2000L;
     /** UI 和 4K 视频使用同一个 overscan，避免一层放大一层不放大 */
     private static final float WALLPAPER_OVERSCAN = 1.002f;
 
@@ -326,6 +342,7 @@ public class LauncherActivity extends Activity {
     private boolean slideshowEnabled = true;
     private int slideshowIntervalSec = 30;
     private boolean slideshowFade = true;
+    private boolean slideshowRandom = false;
     private boolean videoMuted = true;
     private MediaPlayer videoPlayerRef;
     private int videoPlayToken;
@@ -335,6 +352,31 @@ public class LauncherActivity extends Activity {
     private boolean fourKVideoReady;
     /** 4K 视频正在 prepare / 等首帧：避免 onResume 和 onNewIntent 各重播一次 */
     private boolean fourKPreparing;
+    /** 连续切图防抖：UI 预览立即换图，视频层等按键停顿后再启动，只播最后一张 */
+    private final Runnable fourKVideoStart = new Runnable() {
+        @Override
+        public void run() {
+            if (!fourKStaticMode || fourKItems.isEmpty()
+                    || fourKIndex < 0 || fourKIndex >= fourKItems.size()) {
+                fourKPreparing = false;
+                return;
+            }
+            BackgroundItem target = fourKItems.get(fourKIndex);
+            File cache = fourKCacheFile(target);
+            if (cache.exists() && cache.length() > 0) {
+                play4KStatic(cache);
+            } else if (fourKEncoding) {
+                // 正在编码（可能是预编码）：结束后再排一次当前这张
+                fourKEncodeQueued = true;
+            } else {
+                encode4KStatic(target);
+            }
+        }
+    };
+    /** 编码期间用户又需要编码当前图，等当前任务结束后补上 */
+    private boolean fourKEncodeQueued;
+    /** surface 重建后重放 4K 的次数上限，防止播放失败时死循环 */
+    private int fourKSurfaceReplayCount;
     /** 最近解码过的壁纸位图：同一张图在启动/切图时只解码一次 */
     private Bitmap lastLoadedBitmap;
     private String lastLoadedKey;
@@ -369,27 +411,94 @@ public class LauncherActivity extends Activity {
     private LinearLayout managerTabGroup;
     private TextView managerTabImage;
     private TextView managerTabVideo;
+    /** 分页选择条：上一页 / 第 X/Y 页（可打开页码选择）/ 下一页 */
+    private LinearLayout managerPagerRow;
+    private TextView managerPrevPageButton;
+    private TextView managerPageButton;
+    private TextView managerNextPageButton;
     private WallpaperAdapter managerAdapter;
     private boolean managerOpen;
-    /** 缩略图缓存：key = 文件名|stamp */
-    private final Map<String, Bitmap> thumbnailCache = new HashMap<>();
+    /** 壁纸网格当前页（从 0 开始） */
+    private int managerPage;
+    /** 缩略图缓存：key = 文件名|stamp；按访问顺序保留最近 64 张，壁纸再多也不会无限涨内存 */
+    private final Map<String, Bitmap> thumbnailCache =
+            new LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Bitmap> eldest) {
+                    return size() > 64;
+                }
+            };
 
     /** 远程导入页（局域网 HTTP 上传，全屏浮层，盖在管理页上面） */
+    /** 桌面设置页（全屏浮层） */
+    private FrameLayout settingsModule;
+    private TextView settingsNavIconSize;
+    private TextView settingsSmallButton;
+    private TextView settingsMediumButton;
+    private TextView settingsLargeButton;
+    private TextView settingsIconDesc;
+    private boolean settingsOpen;
+    /** 当前图标大小预设：small / medium / large */
+    private String iconSizePreset = ICON_SIZE_MEDIUM;
+
     private FrameLayout remoteModule;
     private TextView remoteUrlView;
     private ImageView remoteQrView;
     private TextView remoteStatusView;
     private TextView remoteBackButton;
+    private Switch remoteKeepSwitch;
     private RemoteImportServer remoteServer;
     private boolean remoteOpen;
 
     private final Handler handler = new Handler();
     private boolean drawerOpen;
+    /** 桌面上按 HOME/返回取消选中后，避免 onResume 又自动聚焦第一个图标 */
+    private boolean desktopFocusCleared;
+    /** 取消选中时承接焦点的透明空控件 */
+    private View focusSink;
     private boolean firstResume = true;
     private int screenHeight;
 
     private int dp(float v) {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    /** 当前图标边长（dp）：小 40 / 中 50 / 大 60 */
+    private int iconSizeDp() {
+        if (ICON_SIZE_SMALL.equals(iconSizePreset)) {
+            return 40;
+        }
+        if (ICON_SIZE_LARGE.equals(iconSizePreset)) {
+            return 60;
+        }
+        return 50;
+    }
+
+    /** Dock 图标数量与抽屉每行列数：小 8 / 中 7 / 大 6 */
+    private int iconsPerRow() {
+        if (ICON_SIZE_SMALL.equals(iconSizePreset)) {
+            return 8;
+        }
+        if (ICON_SIZE_LARGE.equals(iconSizePreset)) {
+            return 6;
+        }
+        return 7;
+    }
+
+    /** 图标外层遮罩边长（dp）：比图标大一圈，保持正方形 */
+    private int iconMaskDp() {
+        return iconSizeDp() + 12;
+    }
+
+    /** 应用名称字号随图标尺寸缩放：小 10 / 中 11 / 大 12sp */
+    private float iconLabelSp() {
+        if (ICON_SIZE_SMALL.equals(iconSizePreset)) {
+            return 10f;
+        }
+        if (ICON_SIZE_LARGE.equals(iconSizePreset)) {
+            return 12f;
+        }
+        return 11f;
     }
 
     @Override
@@ -399,6 +508,8 @@ public class LauncherActivity extends Activity {
         screenHeight = getResources().getDisplayMetrics().heightPixels;
         reveal4KVideo = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getBoolean(KEY_REVEAL_4K, true);
+        iconSizePreset = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(KEY_ICON_SIZE, ICON_SIZE_MEDIUM);
 
         loadOpenTimes();
 
@@ -453,6 +564,29 @@ public class LauncherActivity extends Activity {
                         videoWallpaperReady = false;
                         wallpaperVideo.setVideoPath(file.getAbsolutePath());
                     }
+                } else if (fourKStaticMode && videoSurfaceLost && !fourKPreparing
+                        && fourKSurfaceReplayCount < 2) {
+                    // 4K 静态壁纸同样要重新喂一次缓存的 mp4，否则会停在已销毁的 surface 上。
+                    // 加延迟和次数上限，避免播放失败时 surface 重建/报错互相触发死循环。
+                    videoSurfaceLost = false;
+                    fourKSurfaceReplayCount++;
+                    final File cache = current4KCacheOrNull();
+                    if (cache != null) {
+                        Log.i(TAG, "4K surface recreated, replay #" + fourKSurfaceReplayCount
+                                + " " + cache.getName());
+                        handler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (fourKStaticMode && !videoWallpaperMode) {
+                                    invalidate4KPlayback();
+                                    play4KStatic(cache);
+                                }
+                            }
+                        }, 250);
+                    }
+                } else if (fourKStaticMode && videoSurfaceLost) {
+                    // 重试次数用尽：保持 UI 预览图，不再重放视频层
+                    videoSurfaceLost = false;
                 }
             }
 
@@ -593,8 +727,13 @@ public class LauncherActivity extends Activity {
         wallpaperControls.addView(wallpaperControlPrev);
         wallpaperControls.addView(wallpaperControlNext);
 
-        // 底部栏：左侧"最近使用"占满剩余宽度，右侧提示按文字自适应；
-        // 提示不能再按权重抢宽度，否则第 7 个图标会被挤窄。
+        // 右箭头去掉右边距，使其右端与提示文字右端对齐
+        LinearLayout.LayoutParams nextLp = (LinearLayout.LayoutParams)
+                wallpaperControlNext.getLayoutParams();
+        nextLp.rightMargin = 0;
+
+        // 底部栏：左侧"最近使用"占满剩余宽度，右侧是「左右键 + 提示」竖排；
+        // 提示文字与 Dock 应用名称共用同一条底线。
         LinearLayout bottomBar = new LinearLayout(this);
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.BOTTOM);
@@ -612,31 +751,37 @@ public class LauncherActivity extends Activity {
         hintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         hintView.setShadowLayer(6f, 0f, 2f, 0xCC000000);
         hintView.setGravity(Gravity.END | Gravity.BOTTOM);
-        hintView.setPadding(0, 0, 0, dp(2));
-        LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hintView.setPadding(0, 0, 0, 0);
 
-        // 壁纸左右键挪到「打开应用」上方、与图标行垂直居中
+        LinearLayout rightColumn = new LinearLayout(this);
+        rightColumn.setOrientation(LinearLayout.VERTICAL);
+        rightColumn.setGravity(Gravity.END | Gravity.BOTTOM);
+
         LinearLayout.LayoutParams controlsLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         controlsLp.leftMargin = dp(16);
-        controlsLp.gravity = Gravity.CENTER_VERTICAL;
-        bottomBar.addView(wallpaperControls, controlsLp);
+        // 提示文字改由 homeLayer 单独摆放，这里留出它原来的高度，左右键位置不变
+        controlsLp.bottomMargin = dp(20);
+        rightColumn.addView(wallpaperControls, controlsLp);
 
-        LinearLayout bottomColumn = new LinearLayout(this);
-        bottomColumn.setOrientation(LinearLayout.VERTICAL);
-        bottomColumn.addView(bottomBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        bottomColumn.addView(hintView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        bottomBar.addView(rightColumn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         FrameLayout.LayoutParams columnLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM);
-        columnLp.leftMargin = dp(56);
+        columnLp.leftMargin = dp(30);
         columnLp.rightMargin = dp(30);
-        columnLp.bottomMargin = dp(20);
-        homeLayer.addView(bottomColumn, columnLp);
+        columnLp.bottomMargin = dp(30);
+        homeLayer.addView(bottomBar, columnLp);
+
+        // 提示文字单独贴底：比底栏更低，靠近屏幕底部并留一点空隙
+        FrameLayout.LayoutParams hintLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.END);
+        hintLp.rightMargin = dp(30);
+        hintLp.bottomMargin = dp(12);
+        homeLayer.addView(hintView, hintLp);
 
         // ---- 抽屉层：应用网格 ----
         drawer = new FrameLayout(this);
@@ -652,9 +797,9 @@ public class LauncherActivity extends Activity {
         drawer.addView(drawerTint, matchParent());
 
         grid = new GridView(this);
-        grid.setNumColumns(COLUMNS);
+        grid.setNumColumns(iconsPerRow());
         grid.setHorizontalSpacing(dp(8));
-        grid.setVerticalSpacing(dp(8));
+        grid.setVerticalSpacing(dp(16));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setPadding(dp(26), dp(26), dp(26), dp(26));
         grid.setClipToPadding(false);
@@ -672,10 +817,12 @@ public class LauncherActivity extends Activity {
                 drawerSelectedPosition = position;
                 for (int i = 0; i < parent.getChildCount(); i++) {
                     View child = parent.getChildAt(i);
-                    if (child instanceof ViewGroup && ((ViewGroup) child).getChildCount() > 0) {
-                        View tile = ((ViewGroup) child).getChildAt(0);
-                        tile.setBackgroundResource(child == view
-                                ? R.drawable.item_focus : R.drawable.tile_bg);
+                    if (child instanceof ViewGroup) {
+                        View mask = child.findViewById(0x2003);
+                        if (mask != null) {
+                            mask.setBackgroundResource(child == view
+                                    ? R.drawable.dock_focus : R.drawable.tile_bg);
+                        }
                     }
                 }
             }
@@ -684,9 +831,11 @@ public class LauncherActivity extends Activity {
             public void onNothingSelected(AdapterView<?> parent) {
                 for (int i = 0; i < parent.getChildCount(); i++) {
                     View child = parent.getChildAt(i);
-                    if (child instanceof ViewGroup && ((ViewGroup) child).getChildCount() > 0) {
-                        ((ViewGroup) child).getChildAt(0)
-                                .setBackgroundResource(R.drawable.tile_bg);
+                    if (child instanceof ViewGroup) {
+                        View mask = child.findViewById(0x2003);
+                        if (mask != null) {
+                            mask.setBackgroundResource(R.drawable.tile_bg);
+                        }
                     }
                 }
             }
@@ -696,7 +845,7 @@ public class LauncherActivity extends Activity {
             public boolean onKey(View v, int keyCode, KeyEvent event) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN
                         && keyCode == KeyEvent.KEYCODE_DPAD_UP
-                        && grid.getSelectedItemPosition() < COLUMNS) {
+                        && grid.getSelectedItemPosition() < iconsPerRow()) {
                     closeDrawer();
                     return true;
                 }
@@ -719,6 +868,7 @@ public class LauncherActivity extends Activity {
         menuBar.setPadding(dp(MENU_PADDING_H_DP), dp(MENU_PADDING_V_DP), dp(MENU_PADDING_H_DP), dp(MENU_PADDING_V_DP));
 
         menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_gallery, "壁纸管理"));
+        menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_manage, "桌面设置"));
 
         menuModule.addView(menuBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(MENU_BAR_HEIGHT_DP)));
@@ -740,6 +890,10 @@ public class LauncherActivity extends Activity {
         // 远程导入页：局域网 HTTP 上传，盖在管理页上面
         buildRemoteImportPage();
         root.addView(remoteModule, matchParent());
+
+        // 桌面设置页：全屏浮层
+        buildDesktopSettings();
+        root.addView(settingsModule, matchParent());
 
         startupBlackout = new View(this);
         startupBlackout.setBackgroundColor(Color.BLACK);
@@ -869,11 +1023,22 @@ public class LauncherActivity extends Activity {
         }
         videoIndex = videoItems.isEmpty() ? -1 : index;
         currentVideoName = videoItems.isEmpty() ? null : videoItems.get(videoIndex).name;
+        if (isWallpaperCleared()) {
+            videoIndex = -1;
+            currentVideoName = null;
+        }
         Log.i(TAG, "video background items: " + videoItems.size());
     }
 
     /** 启动时按上次记住的类型恢复壁纸：视频优先，否则走 4K 静态 / 1080p */
     private void restoreWallpaperMode() {
+        if (isWallpaperCleared()) {
+            // 上次是「删除当前壁纸后黑屏」的状态，不要自动挑一张
+            videoWallpaperMode = false;
+            stopVideoWallpaper();
+            refresh4KStaticMode();
+            return;
+        }
         String type = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getString(KEY_WALLPAPER_TYPE, TYPE_IMAGE);
         if (TYPE_VIDEO.equals(type) && !videoItems.isEmpty()) {
@@ -892,6 +1057,11 @@ public class LauncherActivity extends Activity {
 
     private void refreshVideoWallpaperMode() {
         if (wallpaperVideo == null) {
+            return;
+        }
+        if (isWallpaperCleared()) {
+            // 当前壁纸删掉后的黑屏状态，不要再自动恢复视频
+            stopVideoWallpaper();
             return;
         }
         if (!videoWallpaperMode || videoItems.isEmpty()) {
@@ -1041,6 +1211,20 @@ public class LauncherActivity extends Activity {
                     return true;
                 }
                 Log.w(TAG, "video wallpaper failed: " + what + "/" + extra);
+                // 删除当前视频后切换时，surface 正在重建，播放器会报一次 1/0；
+                // 这种瞬时错误先重试，别直接退回静态壁纸
+                if (videoRetryCount < 2) {
+                    videoRetryCount++;
+                    handler.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (videoWallpaperMode) {
+                                refreshVideoWallpaperMode();
+                            }
+                        }
+                    }, 500);
+                    return true;
+                }
                 videoWallpaperMode = false;
                 stopVideoWallpaper();
                 getSharedPreferences(PREFS, MODE_PRIVATE).edit()
@@ -1258,6 +1442,7 @@ public class LauncherActivity extends Activity {
         videoIndex = index;
         currentVideoName = name;
         videoWallpaperMode = true;
+        setWallpaperCleared(false);
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_VIDEO_BACKGROUND, name)
                 .putString(KEY_WALLPAPER_TYPE, TYPE_VIDEO).apply();
@@ -1367,6 +1552,10 @@ public class LauncherActivity extends Activity {
         }
         fourKIndex = fourKItems.isEmpty() ? -1 : index;
         current4KName = fourKItems.isEmpty() ? null : fourKItems.get(fourKIndex).name;
+        if (isWallpaperCleared()) {
+            fourKIndex = -1;
+            current4KName = null;
+        }
         Log.i(TAG, "4K background items: " + fourKItems.size());
     }
 
@@ -1441,7 +1630,42 @@ public class LauncherActivity extends Activity {
         return order;
     }
 
+    private boolean isWallpaperCleared() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(KEY_WALLPAPER_CLEARED, false);
+    }
+
+    private void setWallpaperCleared(boolean cleared) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(KEY_WALLPAPER_CLEARED, cleared).apply();
+    }
+
+    /** 把两层 UI 壁纸都撤掉，露出桌面根容器的黑色背景 */
+    private void clearWallpaperToBlack() {
+        handler.removeCallbacks(bgTick);
+        if (bgFront != null) {
+            bgFront.setImageDrawable(null);
+            bgFront.setVisibility(View.INVISIBLE);
+        }
+        if (bgBack != null) {
+            bgBack.setImageDrawable(null);
+            bgBack.setVisibility(View.INVISIBLE);
+        }
+    }
+
     private void refresh4KStaticMode() {
+        if (isWallpaperCleared()) {
+            // 当前壁纸被删掉：不再自动挑一张，保持黑屏
+            fourKStaticMode = false;
+            fourKEncoding = false;
+            fourKEncodeToken++;
+            fourKVideoReady = false;
+            fourKPreparing = false;
+            handler.removeCallbacks(bgTick);
+            stop4KStatic();
+            clearWallpaperToBlack();
+            return;
+        }
         if (videoWallpaperMode) {
             return;
         }
@@ -1469,7 +1693,7 @@ public class LauncherActivity extends Activity {
     }
 
     private void show4KCurrent() {
-        if (!fourKStaticMode || fourKItems.isEmpty()) {
+        if (!fourKStaticMode || fourKItems.isEmpty() || isWallpaperCleared()) {
             return;
         }
         if (fourKIndex < 0 || fourKIndex >= fourKItems.size()) {
@@ -1485,28 +1709,22 @@ public class LauncherActivity extends Activity {
         Log.i(TAG, "show4KCurrent " + item.name + " ready=" + fourKVideoReady
                 + " preparing=" + fourKPreparing + " surfaceLost=" + videoSurfaceLost);
         current4KName = item.name;
+        fourKSurfaceReplayCount = 0;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_4K_BACKGROUND, item.name).apply();
-        // 标记"准备中"必须同步落下：真正 play 在 100ms 后才执行，
+        // 标记"准备中"必须同步落下：视频层在防抖窗口结束后才真正启动，
         // 这期间 onResume/onNewIntent 的第二次调用不能又排一遍。
         fourKPreparing = true;
         show4KPreview(item);
-        final int token = fourKEncodeToken;
-        final BackgroundItem target = item;
-        handler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (!fourKStaticMode || token != fourKEncodeToken) {
-                    return;
-                }
-                File cache = fourKCacheFile(target);
-                if (cache.exists() && cache.length() > 0) {
-                    play4KStatic(cache);
-                } else {
-                    encode4KStatic(target);
-                }
-            }
-        }, 100);
+        // 防抖：连续切图时取消上一次尚未启动的视频，只播最后停在的那张，
+        // 避免快速点按导致多次 setVideoPath 抢表面，出现旧帧闪回。
+        schedule4KVideoStart();
+    }
+
+    /** 重新计时：用户停止操作 2 秒后再启动视频层（UI 层已经即时换好图） */
+    private void schedule4KVideoStart() {
+        handler.removeCallbacks(fourKVideoStart);
+        handler.postDelayed(fourKVideoStart, FOUR_K_SWITCH_DEBOUNCE_MS);
     }
 
     private void show4KPreview(BackgroundItem item) {
@@ -1560,26 +1778,41 @@ public class LauncherActivity extends Activity {
     }
 
     private void switch4KStatic(int direction) {
-        if (!fourKStaticEnabled() || fourKEncoding || fourKItems.isEmpty()) {
+        switch4KStatic(direction, false);
+    }
+
+    private void switch4KStatic(int direction, boolean random) {
+        if (!fourKStaticEnabled() || fourKItems.isEmpty()) {
             return;
         }
         int size = fourKItems.size();
         if (size < 2) {
             return;
         }
-        int next = (fourKIndex + direction + size) % size;
+        int next;
+        if (random) {
+            next = new java.util.Random().nextInt(size - 1);
+            if (next >= fourKIndex) {
+                next++;
+            }
+        } else {
+            next = (fourKIndex + direction + size) % size;
+        }
         if (next == fourKIndex) {
             return;
         }
+        // UI 立即换图；视频层交给 fourKVideoStart 延迟加载，期间再切图会重置计时
         fourKIndex = next;
         fourKEncodeToken++;
-        fourKEncoding = false;
         invalidate4KPlayback();
         show4KCurrent();
     }
 
     /** 主动换图/重新应用时必须清掉"已在播"标记，否则会被 show4KCurrent 的去重逻辑跳过 */
     private void invalidate4KPlayback() {
+        // 让上一张视频的"首帧就绪"回调作废：否则它晚到时会提前把 UI 封面揭掉，
+        // 露出旧视频帧，表现为快速切图时闪回上一张。
+        fourKPlayToken++;
         fourKVideoReady = false;
         fourKPreparing = false;
     }
@@ -1627,10 +1860,16 @@ public class LauncherActivity extends Activity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            if (token != fourKEncodeToken) {
+                            if (isDestroyed()) {
                                 return;
                             }
                             fourKEncoding = false;
+                            fourKEncodeQueued = false;
+                            if (token != fourKEncodeToken) {
+                                // 编码期间用户又切了壁纸：这张作废，重新排一次延迟加载
+                                schedule4KVideoStart();
+                                return;
+                            }
                             if (fourKStaticMode) {
                                 play4KStatic(cache);
                             }
@@ -1645,10 +1884,18 @@ public class LauncherActivity extends Activity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            if (token != fourKEncodeToken) {
+                            if (isDestroyed()) {
                                 return;
                             }
                             fourKEncoding = false;
+                            if (token != fourKEncodeToken) {
+                                if (fourKEncodeQueued) {
+                                    fourKEncodeQueued = false;
+                                    schedule4KVideoStart();
+                                }
+                                return;
+                            }
+                            fourKEncodeQueued = false;
                             fourKPreparing = false;
                             revealStartupFromBlack();
                             Toast.makeText(LauncherActivity.this,
@@ -1668,11 +1915,26 @@ public class LauncherActivity extends Activity {
                 + FOUR_K_CACHE_VERSION + ".mp4");
     }
 
+    /** 当前 4K 壁纸已编码好的缓存文件，没有则返回 null */
+    private File current4KCacheOrNull() {
+        if (current4KName == null) {
+            return null;
+        }
+        for (BackgroundItem item : fourKItems) {
+            if (item.name.equals(current4KName)) {
+                File cache = fourKCacheFile(item);
+                return cache.exists() && cache.length() > 0 ? cache : null;
+            }
+        }
+        return null;
+    }
+
     private void play4KStatic(final File file) {
         if (!fourKStaticMode || wallpaperVideo == null) {
             return;
         }
         final int token = ++fourKPlayToken;
+        videoSurfaceLost = false;
         fourKPreparing = true;
         wallpaperVideo.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
             @Override
@@ -1693,10 +1955,16 @@ public class LauncherActivity extends Activity {
         wallpaperVideo.setOnInfoListener(new MediaPlayer.OnInfoListener() {
             @Override
             public boolean onInfo(MediaPlayer mp, int what, int extra) {
+                // 快速切图时旧播放器的事件会晚到：不是当前这次播放就忽略，
+                // 否则会把 fourKPreparing 清掉，露出上一张的旧帧。
+                if (token != fourKPlayToken) {
+                    return false;
+                }
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                     Log.i(TAG, "4K static rendering start");
                     fourKPreparing = false;
                     videoSurfaceLost = false;
+                    fourKSurfaceReplayCount = 0;
                     handler.postDelayed(new Runnable() {
                         @Override
                         public void run() {
@@ -1705,8 +1973,8 @@ public class LauncherActivity extends Activity {
                                 maybeHide4KUiCover();
                             }
                         }
-                    }, FOUR_K_FRAME_SETTLE_MS);
-                    // 静态壁纸只有 2 个相同的帧：首帧上屏后主动暂停，把这一帧留在 surface 上，
+                    }, FOUR_K_STATIC_SETTLE_MS);
+                    // 静态壁纸只有 3 个相同的帧：等错帧被覆盖后主动暂停，把最后这一帧留在 surface 上，
                     // 省掉解码器每 2 秒重复解一帧 4K。setLooping 仍是 true，所以永远走不到 EOS，
                     // 不会出现播放完成后的黑屏。
                     handler.postDelayed(new Runnable() {
@@ -1830,6 +2098,75 @@ public class LauncherActivity extends Activity {
         }
         Log.i(TAG, "4K UI cover hidden (hard cut)");
         revealStartupFromBlack();
+        // 画面已经清晰，趁空闲把下一张预编码好，用户切过去时可直接命中缓存
+        prefetchNext4KStatic();
+    }
+
+    /** 后台预编码下一张 4K 壁纸；与按需编码共用 fourKEncoding 标记，保证同一时刻只有一个编码任务 */
+    private void prefetchNext4KStatic() {
+        if (!fourKStaticMode || fourKEncoding || !x264Available || fourKItems.size() < 2) {
+            return;
+        }
+        final BackgroundItem item = fourKItems.get((fourKIndex + 1) % fourKItems.size());
+        if (item.filePath == null) {
+            return;
+        }
+        final File cache = fourKCacheFile(item);
+        if (cache.exists() && cache.length() > 0) {
+            return;
+        }
+        fourKEncoding = true;
+        Log.i(TAG, "prefetch 4K wallpaper: " + item.name);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                boolean ok = false;
+                try {
+                    int[] target = targetSizeFor(item.filePath);
+                    if (target != null) {
+                        Bitmap source = decode4KBitmap(item.filePath, target[0], target[1]);
+                        if (source != null) {
+                            byte[] yuv = bitmapToI420(source, target[0], target[1]);
+                            source.recycle();
+                            byte[] data = encodeI4204K(yuv, target[0], target[1], FOUR_K_ENCODE_FRAMES);
+                            if (data != null) {
+                                write4KMp4(cache, data, target[0], target[1]);
+                                ok = true;
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "prefetch 4K wallpaper failed", t);
+                    cache.delete();
+                }
+                final boolean success = ok;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (isDestroyed()) {
+                            return;
+                        }
+                        fourKEncoding = false;
+                        if (!fourKStaticMode) {
+                            return;
+                        }
+                        BackgroundItem current = (fourKIndex >= 0 && fourKIndex < fourKItems.size())
+                                ? fourKItems.get(fourKIndex) : null;
+                        if (success && current != null && current.name.equals(item.name)) {
+                            // 用户已经切到这张：直接播，省掉一次防抖等待
+                            handler.removeCallbacks(fourKVideoStart);
+                            Log.i(TAG, "prefetch hit current wallpaper: " + item.name);
+                            play4KStatic(cache);
+                            return;
+                        }
+                        if (fourKEncodeQueued) {
+                            fourKEncodeQueued = false;
+                            schedule4KVideoStart();
+                        }
+                    }
+                });
+            }
+        }, "4k-wallpaper-prefetch").start();
     }
 
     private void revealStartupFromBlack() {
@@ -1850,10 +2187,12 @@ public class LauncherActivity extends Activity {
     }
 
     private void stop4KStatic() {
+        handler.removeCallbacks(fourKVideoStart);
         fourKPlayToken++;
         fourKUiAnimationDone = false;
         fourKVideoReady = false;
         fourKPreparing = false;
+        fourKSurfaceReplayCount = 0;
         if (wallpaperVideo != null) {
             wallpaperVideo.stopPlayback();
             wallpaperVideo.setVisibility(View.GONE);
@@ -1870,25 +2209,12 @@ public class LauncherActivity extends Activity {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeFile(path, bounds);
-        int sw = bounds.outWidth;
-        int sh = bounds.outHeight;
-        if (sw <= 0 || sh <= 0) {
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
             return null;
         }
-        int cropW = sw;
-        int cropH = sh;
-        if ((long) sw * 9 > (long) sh * 16) {
-            cropW = (int) ((long) sh * 16 / 9);
-        } else {
-            cropH = (int) ((long) sw * 9 / 16);
-        }
-        int w = Math.min(cropW, FOUR_K_W);
-        int h = Math.min(cropH, FOUR_K_H);
-        w &= ~1;
-        h &= ~1;
-        if (w < 2) w = 2;
-        if (h < 2) h = 2;
-        return new int[]{w, h};
+        // 固定 4K 画布：所有壁纸编码尺寸一致，视频 plane 切换时不需要重配缩放/色彩，
+        // 避免首帧按上一张的配置显示（放大、偏蓝）。比例不同的图在 decode4KBitmap 里居中裁切。
+        return new int[]{FOUR_K_W, FOUR_K_H};
     }
 
     private Bitmap decode4KBitmap(String path, int targetW, int targetH) {
@@ -1984,7 +2310,9 @@ public class LauncherActivity extends Activity {
         }
 
         MediaFormat format = MediaFormat.createVideoFormat("video/avc", width, height);
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, 1);
+        // 帧率必须够高：解码器/显示 plane 在切换尺寸后，第一帧可能按旧缩放/旧色彩展示，
+        // 只有 1fps 时这张错帧会停留近 1 秒；30fps 下第二帧 33ms 后就覆盖掉它
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
         format.setByteBuffer("csd-0", withStartCode(sps));
         format.setByteBuffer("csd-1", withStartCode(pps));
 
@@ -2003,7 +2331,7 @@ public class LauncherActivity extends Activity {
             for (int i = 0; i < frames.size(); i++) {
                 byte[] annexB = toAnnexB(frames.get(i));
                 ByteBuffer buf = ByteBuffer.wrap(annexB);
-                info.set(0, annexB.length, i * 1_000_000L,
+                info.set(0, annexB.length, i * 33_333L,
                         MediaCodec.BUFFER_FLAG_KEY_FRAME);
                 muxer.writeSampleData(track, buf, info);
             }
@@ -2048,9 +2376,10 @@ public class LauncherActivity extends Activity {
 
     private void loadPlaybackSettings() {
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
-        slideshowEnabled = sp.getBoolean(KEY_SLIDESHOW, true);
+        slideshowEnabled = sp.getBoolean(KEY_SLIDESHOW, false);
         slideshowIntervalSec = sp.getInt(KEY_SLIDESHOW_SEC, 30);
         slideshowFade = sp.getBoolean(KEY_SLIDESHOW_FADE, true);
+        slideshowRandom = sp.getBoolean(KEY_SLIDESHOW_RANDOM, false);
         videoMuted = sp.getBoolean(KEY_VIDEO_MUTED, true);
     }
 
@@ -2059,6 +2388,7 @@ public class LauncherActivity extends Activity {
                 .putBoolean(KEY_SLIDESHOW, slideshowEnabled)
                 .putInt(KEY_SLIDESHOW_SEC, slideshowIntervalSec)
                 .putBoolean(KEY_SLIDESHOW_FADE, slideshowFade)
+                .putBoolean(KEY_SLIDESHOW_RANDOM, slideshowRandom)
                 .putBoolean(KEY_VIDEO_MUTED, videoMuted)
                 .apply();
     }
@@ -2070,13 +2400,85 @@ public class LauncherActivity extends Activity {
         return (seconds / 60) + " 分钟";
     }
 
-    private Switch makeSettingsSwitch(String label, boolean checked) {
-        Switch sw = new Switch(this);
-        sw.setText(label);
-        sw.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+    /** 「◀ 值 ▶」：左右箭头位置固定，值在中间居中；返回中间的值控件用于刷新 */
+    private TextView addStepperValue(LinearLayout parent) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER);
+
+        int arrowColor = 0xFF7FB2E5;
+        TextView left = new TextView(this);
+        left.setText("◀");
+        left.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        left.setTextColor(arrowColor);
+
+        TextView value = new TextView(this);
+        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        value.setTextColor(Color.WHITE);
+        value.setGravity(Gravity.CENTER);
+
+        TextView right = new TextView(this);
+        right.setText("▶");
+        right.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        right.setTextColor(arrowColor);
+
+        box.addView(left, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        box.addView(value, new LinearLayout.LayoutParams(
+                dp(96), ViewGroup.LayoutParams.WRAP_CONTENT));
+        box.addView(right, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        parent.addView(box, new LinearLayout.LayoutParams(
+                dp(136), ViewGroup.LayoutParams.WRAP_CONTENT));
+        return value;
+    }
+
+    /** 设置项整行：左侧文字、右侧开关；焦点落在整行上，聚焦时整行高亮 */
+    private LinearLayout makeSettingsRow(String label, boolean checked,
+            android.widget.CompoundButton.OnCheckedChangeListener listener) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setFocusable(true);
+        row.setFocusableInTouchMode(true);
+        row.setPadding(dp(14), dp(8), dp(14), dp(8));
+
+        TextView text = new TextView(this);
+        text.setText(label);
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        text.setTextColor(Color.WHITE);
+        row.addView(text, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final Switch sw = new Switch(this);
         sw.setChecked(checked);
-        sw.setPadding(0, dp(6), 0, dp(6));
-        return sw;
+        sw.setFocusable(false);
+        sw.setFocusableInTouchMode(false);
+        sw.setClickable(false);
+        sw.setOnCheckedChangeListener(listener);
+        row.addView(sw, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sw.setChecked(!sw.isChecked());
+            }
+        });
+        row.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                v.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
+            }
+        });
+        return row;
+    }
+
+    private LinearLayout.LayoutParams settingsRowLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(4);
+        return lp;
     }
 
     private void showBackgroundSettings() {
@@ -2086,43 +2488,58 @@ public class LauncherActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(30), dp(18), dp(30), dp(6));
 
-        Switch sw4k = makeSettingsSwitch("4K 静态壁纸", reveal4KVideo);
-        sw4k.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                set4KStaticEnabled(isChecked);
-            }
-        });
-        box.addView(sw4k);
+        LinearLayout row4k = makeSettingsRow("4K 静态壁纸", reveal4KVideo,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                        set4KStaticEnabled(isChecked);
+                    }
+                });
+        box.addView(row4k, settingsRowLp());
 
-        Switch swSlide = makeSettingsSwitch("幻灯片播放", slideshowEnabled);
-        swSlide.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                slideshowEnabled = isChecked;
-                savePlaybackSettings();
-                resetBgTimer();
-                Log.i(TAG, "slideshow = " + isChecked);
-            }
-        });
-        box.addView(swSlide);
+        LinearLayout rowSlide = makeSettingsRow("幻灯片播放", slideshowEnabled,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                        slideshowEnabled = isChecked;
+                        savePlaybackSettings();
+                        resetBgTimer();
+                        Log.i(TAG, "slideshow = " + isChecked);
+                    }
+                });
+        box.addView(rowSlide, settingsRowLp());
 
-        final TextView interval = new TextView(this);
-        interval.setText("切换间隔：" + intervalLabel(slideshowIntervalSec) + "（左右键调整）");
-        interval.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        interval.setTextColor(Color.WHITE);
-        interval.setFocusable(true);
-        interval.setFocusableInTouchMode(true);
-        interval.setPadding(dp(14), dp(12), dp(14), dp(12));
-        interval.setBackgroundResource(R.drawable.tile_bg);
-        interval.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+        // 切换间隔：左侧名称、右侧「◀ 值 ▶」（箭头位置固定，只更新中间的值）
+        LinearLayout rowInterval = new LinearLayout(this);
+        rowInterval.setOrientation(LinearLayout.HORIZONTAL);
+        rowInterval.setGravity(Gravity.CENTER_VERTICAL);
+        rowInterval.setFocusable(true);
+        rowInterval.setFocusableInTouchMode(true);
+        rowInterval.setPadding(dp(14), dp(8), dp(14), dp(8));
+
+        TextView intervalTitle = new TextView(this);
+        intervalTitle.setText("切换间隔");
+        intervalTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        intervalTitle.setTextColor(Color.WHITE);
+        rowInterval.addView(intervalTitle, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final TextView intervalValue = addStepperValue(rowInterval);
+        final Runnable refreshInterval = new Runnable() {
+            @Override
+            public void run() {
+                intervalValue.setText(intervalLabel(slideshowIntervalSec));
+            }
+        };
+        refreshInterval.run();
+
+        rowInterval.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus
-                        ? R.drawable.item_focus : R.drawable.tile_bg);
+                v.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
             }
         });
-        View.OnKeyListener stepKey = new View.OnKeyListener() {
+        rowInterval.setOnKeyListener(new View.OnKeyListener() {
             @Override
             public boolean onKey(View v, int keyCode, KeyEvent event) {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) {
@@ -2134,66 +2551,124 @@ public class LauncherActivity extends Activity {
                     return false;
                 }
                 stepSlideshowInterval(delta);
-                interval.setText("切换间隔：" + intervalLabel(slideshowIntervalSec) + "（左右键调整）");
+                refreshInterval.run();
                 return true;
             }
-        };
-        interval.setOnKeyListener(stepKey);
-        interval.setOnClickListener(new View.OnClickListener() {
+        });
+        rowInterval.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 stepSlideshowInterval(1);
-                interval.setText("切换间隔：" + intervalLabel(slideshowIntervalSec) + "（左右键调整）");
+                refreshInterval.run();
             }
         });
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ilp.topMargin = dp(6);
-        box.addView(interval, ilp);
+        box.addView(rowInterval, settingsRowLp());
 
-        Switch swFade = makeSettingsSwitch("切换特效（淡入淡出）", slideshowFade);
-        swFade.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+        // 播放顺序：左侧名称、右侧「◀ 顺序/随机 ▶」
+        LinearLayout rowOrder = new LinearLayout(this);
+        rowOrder.setOrientation(LinearLayout.HORIZONTAL);
+        rowOrder.setGravity(Gravity.CENTER_VERTICAL);
+        rowOrder.setFocusable(true);
+        rowOrder.setFocusableInTouchMode(true);
+        rowOrder.setPadding(dp(14), dp(8), dp(14), dp(8));
+
+        TextView orderTitle = new TextView(this);
+        orderTitle.setText("播放顺序");
+        orderTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        orderTitle.setTextColor(Color.WHITE);
+        rowOrder.addView(orderTitle, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final TextView orderValue = addStepperValue(rowOrder);
+        final Runnable refreshOrder = new Runnable() {
             @Override
-            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                slideshowFade = isChecked;
-                savePlaybackSettings();
-                Log.i(TAG, "slideshow fade = " + isChecked);
+            public void run() {
+                orderValue.setText(slideshowRandom ? "随机" : "顺序");
+            }
+        };
+        refreshOrder.run();
+
+        rowOrder.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                v.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
             }
         });
-        box.addView(swFade);
-
-        Switch swMute = makeSettingsSwitch("动态壁纸静音", videoMuted);
-        swMute.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+        rowOrder.setOnKeyListener(new View.OnKeyListener() {
             @Override
-            public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                videoMuted = isChecked;
-                savePlaybackSettings();
-                if (videoPlayerRef != null) {
-                    float volume = isChecked ? 0f : 1f;
-                    try {
-                        videoPlayerRef.setVolume(volume, volume);
-                    } catch (Throwable ignored) {
-                    }
+            public boolean onKey(View v, int keyCode, KeyEvent event) {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) {
+                    return false;
                 }
+                if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT
+                        && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    return false;
+                }
+                slideshowRandom = !slideshowRandom;
+                savePlaybackSettings();
+                refreshOrder.run();
+                return true;
             }
         });
-        box.addView(swMute);
+        rowOrder.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                slideshowRandom = !slideshowRandom;
+                savePlaybackSettings();
+                refreshOrder.run();
+            }
+        });
+        box.addView(rowOrder, settingsRowLp());
+
+        LinearLayout rowFade = makeSettingsRow("切换特效", slideshowFade,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                        slideshowFade = isChecked;
+                        savePlaybackSettings();
+                        Log.i(TAG, "slideshow fade = " + isChecked);
+                    }
+                });
+        box.addView(rowFade, settingsRowLp());
+
+        LinearLayout rowMute = makeSettingsRow("动态壁纸静音", videoMuted,
+                new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                        videoMuted = isChecked;
+                        savePlaybackSettings();
+                        if (videoPlayerRef != null) {
+                            float volume = isChecked ? 0f : 1f;
+                            try {
+                                videoPlayerRef.setVolume(volume, volume);
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    }
+                });
+        box.addView(rowMute, settingsRowLp());
 
 
-        TextView desc = new TextView(this);
-        desc.setText("幻灯片按上面设定的间隔自动换壁纸；4K 模式下切换一律硬切，"
-                + "「切换特效」只对 1080p 静态壁纸生效。\n"
-                + "动态壁纸播放时默认静音，关掉本项后使用电视当前音量。\n"
-                + "动态壁纸固定循环播放。\n\n"
-                + "4K 图片目录：\n"
-                + new File(getExternalFilesDir(null), FOUR_K_BG_DIR).getAbsolutePath());
-        desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        desc.setTextColor(0xFF9FB0C2);
-        desc.setLineSpacing(dp(2), 1f);
+        TextView hint4k = new TextView(this);
+        hint4k.setText("4K 静态壁纸：将 4K 图片编码为 3 帧短视频，利用硬件视频层播放，比直接渲染更清晰。");
+        hint4k.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        hint4k.setTextColor(0xFF9FB0C2);
+        hint4k.setLineSpacing(dp(2), 1f);
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.topMargin = dp(12);
-        box.addView(desc, dlp);
+        dlp.topMargin = dp(10);
+        box.addView(hint4k, dlp);
+
+        TextView hintCache = new TextView(this);
+        hintCache.setText(fourKCacheSummary()
+                + "\n缓存存放在应用内部存储，卸载应用或清空应用数据会一并删除；删除图片壁纸后，对应缓存下次启动自动清理。");
+        hintCache.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        hintCache.setTextColor(0xFF9FB0C2);
+        hintCache.setLineSpacing(dp(2), 1f);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.topMargin = dp(6);
+        box.addView(hintCache, clp);
 
         new AlertDialog.Builder(this)
                 .setTitle("背景设置")
@@ -2233,7 +2708,7 @@ public class LauncherActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 v.setBackgroundResource(hasFocus
-                        ? R.drawable.item_focus : R.drawable.tile_bg);
+                        ? R.drawable.dock_focus : R.drawable.tile_bg);
             }
         });
         button.setOnClickListener(new View.OnClickListener() {
@@ -2268,7 +2743,7 @@ public class LauncherActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 v.setBackgroundResource(hasFocus
-                        ? R.drawable.item_focus : R.drawable.tile_bg);
+                        ? R.drawable.dock_focus : R.drawable.tile_bg);
             }
         });
         item.setOnClickListener(new View.OnClickListener() {
@@ -2277,6 +2752,8 @@ public class LauncherActivity extends Activity {
                 if ("壁纸管理".equals(label)) {
                     // 菜单直达壁纸管理页（播放设置在管理页里）
                     openWallpaperManager();
+                } else if ("桌面设置".equals(label)) {
+                    openDesktopSettings();
                 } else {
                     // 其它菜单项功能待实现
                     Log.i(TAG, "menu item clicked: " + label + " (todo)");
@@ -2321,7 +2798,8 @@ public class LauncherActivity extends Activity {
 
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
-        column.setPadding(dp(40), dp(28), dp(40), dp(22));
+        // 底部少留 8dp：状态栏文字垂直居中，文字底边到屏幕的距离才和左右留白一致
+        column.setPadding(dp(28), dp(28), dp(28), dp(20));
         managerModule.addView(column, matchParent());
 
         TextView title = new TextView(this);
@@ -2351,8 +2829,80 @@ public class LauncherActivity extends Activity {
 
         column.addView(managerTabRow);
 
+        // 分页选择条：放在状态栏右侧，多页时显示，可快速翻页/跳到指定页
+        managerPagerRow = new LinearLayout(this);
+        managerPagerRow.setOrientation(LinearLayout.HORIZONTAL);
+        managerPagerRow.setGravity(Gravity.CENTER_VERTICAL);
+        managerPagerRow.setVisibility(View.GONE);
+        managerPrevPageButton = makeManagerButton("\u2039 上一页", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                jumpManagerPage(managerPage - 1);
+            }
+        });
+        managerPageButton = makeManagerButton("第 1/1 页", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showPagePicker();
+            }
+        });
+        managerNextPageButton = makeManagerButton("下一页 \u203A", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                jumpManagerPage(managerPage + 1);
+            }
+        });
+        managerPagerRow.addView(managerPrevPageButton);
+        managerPagerRow.addView(managerPageButton);
+        managerPagerRow.addView(managerNextPageButton);
+        // 状态栏里用更矮的分页按钮，避免把底部栏撑高
+        TextView[] pagerButtons = {managerPrevPageButton, managerPageButton, managerNextPageButton};
+        for (int i = 0; i < pagerButtons.length; i++) {
+            TextView button = pagerButtons[i];
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) button.getLayoutParams();
+            lp.height = dp(36);
+            lp.rightMargin = i == pagerButtons.length - 1 ? 0 : dp(8);
+            button.setLayoutParams(lp);
+            button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            button.setPadding(dp(12), 0, dp(12), 0);
+            // 未聚焦时背景透明，只保留文字
+            button.setBackgroundColor(Color.TRANSPARENT);
+            button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+                @Override
+                public void onFocusChange(View v, boolean hasFocus) {
+                    if (hasFocus) {
+                        v.setBackgroundResource(R.drawable.dock_focus);
+                    } else {
+                        v.setBackgroundColor(Color.TRANSPARENT);
+                    }
+                }
+            });
+        }
+
+        // 分页条：↑ 回网格最后一行，↓ 没有可去的地方
+        View.OnKeyListener pagerKeys = new View.OnKeyListener() {
+            @Override
+            public boolean onKey(View v, int keyCode, KeyEvent event) {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) {
+                    return false;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                    if (managerGrid != null && managerAdapter != null
+                            && managerAdapter.getCount() > 0) {
+                        managerGrid.setSelection(managerAdapter.getCount() - 1);
+                        managerGrid.requestFocus();
+                    }
+                    return true;
+                }
+                return false;
+            }
+        };
+        for (int i = 0; i < managerPagerRow.getChildCount(); i++) {
+            managerPagerRow.getChildAt(i).setOnKeyListener(pagerKeys);
+        }
+
         managerEmpty = new TextView(this);
-        managerEmpty.setText("还没有图片壁纸\n点下面「导入图片」，从 U 盘或本地存储添加");
+        managerEmpty.setText("还没有图片壁纸\n点下面「导入壁纸」，从 U 盘或本地存储添加");
         managerEmpty.setTextColor(0xFF8FA0B3);
         managerEmpty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         managerEmpty.setGravity(Gravity.CENTER);
@@ -2363,15 +2913,40 @@ public class LauncherActivity extends Activity {
         managerGrid = new GridView(this) {
             @Override
             public boolean dispatchKeyEvent(KeyEvent event) {
+                int key = event.getKeyCode();
                 // 同一行内左右移动；到行首再按左留在原地，避免跨行走位
-                if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT
+                if (key == KeyEvent.KEYCODE_DPAD_LEFT
                         && getSelectedItemPosition() % getNumColumns() == 0) {
                     return false;
+                }
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    int selected = getSelectedItemPosition();
+                    int cols = getNumColumns();
+                    // 第一行再按 ↑：回到顶部 tab（分页条在底部，不再走分页条）
+                    if (key == KeyEvent.KEYCODE_DPAD_UP && selected >= 0 && selected < cols) {
+                        if (managerType == MANAGER_IMAGES && managerTabImage != null) {
+                            managerTabImage.requestFocus();
+                        } else if (managerTabVideo != null) {
+                            managerTabVideo.requestFocus();
+                        }
+                        return true;
+                    }
+                    // 最后一行再按 ↓：把焦点交给底部右侧的分页选择器，不自动换页
+                    if (key == KeyEvent.KEYCODE_DPAD_DOWN && selected >= 0) {
+                        int rows = (getCount() + cols - 1) / cols;
+                        if (rows > 0 && selected / cols == rows - 1) {
+                            if (managerPagerRow != null
+                                    && managerPagerRow.getVisibility() == View.VISIBLE) {
+                                managerPageButton.requestFocus();
+                                return true;
+                            }
+                        }
+                    }
                 }
                 return super.dispatchKeyEvent(event);
             }
         };
-        managerGrid.setNumColumns(5);
+        managerGrid.setNumColumns(6);
         managerGrid.setHorizontalSpacing(dp(12));
         managerGrid.setVerticalSpacing(dp(12));
         managerGrid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
@@ -2383,7 +2958,7 @@ public class LauncherActivity extends Activity {
         managerGrid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                showWallpaperActions(position);
+                showWallpaperActions(managerPage * MANAGER_PAGE_SIZE + position);
             }
         });
         managerGrid.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -2408,7 +2983,7 @@ public class LauncherActivity extends Activity {
         gridLp.topMargin = dp(10);
         column.addView(managerGrid, gridLp);
 
-        managerImportButton = makeManagerButton("导入图片", new View.OnClickListener() {
+        managerImportButton = makeManagerButton("导入壁纸", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showImportChooser();
@@ -2429,7 +3004,7 @@ public class LauncherActivity extends Activity {
             }
         }));
 
-        // 状态栏：壁纸浏览模块（网格）下面
+        // 状态栏：左边数量/当前壁纸，右边分页选择器
         managerStats = new TextView(this);
         managerStats.setTextColor(0xFFB8C4D2);
         managerStats.setFocusable(false);
@@ -2437,8 +3012,15 @@ public class LauncherActivity extends Activity {
         managerStats.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         managerStats.setEllipsize(TextUtils.TruncateAt.END);
         managerStats.setSingleLine(true);
-        managerStats.setPadding(0, dp(10), 0, 0);
-        column.addView(managerStats, new LinearLayout.LayoutParams(
+        LinearLayout statusRow = new LinearLayout(this);
+        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+        statusRow.setPadding(0, dp(10), 0, 0);
+        statusRow.addView(managerStats, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        statusRow.addView(managerPagerRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        column.addView(statusRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // tab 行 / 功能栏按 ↓ 一律把焦点交给壁纸网格
@@ -2449,12 +3031,11 @@ public class LauncherActivity extends Activity {
                         || keyCode != KeyEvent.KEYCODE_DPAD_DOWN) {
                     return false;
                 }
-                if (managerGrid == null || activeManagerItems().isEmpty()) {
+                if (managerGrid == null || activeManagerPageItems().isEmpty()) {
                     return false;
                 }
-                int index = Math.max(activeManagerIndex(), 0);
-                managerGrid.setSelection(index);
-                managerGrid.requestFocus();
+                // 从 tab 进入网格不自动定位当前壁纸，直接落在本页第一张
+                focusManagerGridTop();
                 return true;
             }
         };
@@ -2482,7 +3063,7 @@ public class LauncherActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 v.setBackgroundResource(hasFocus
-                        ? R.drawable.item_focus : R.drawable.tile_bg);
+                        ? R.drawable.dock_focus : R.drawable.tile_bg);
             }
         });
         button.setOnClickListener(listener);
@@ -2499,6 +3080,7 @@ public class LauncherActivity extends Activity {
         }
         hideMenuImmediately();
         managerOpen = true;
+        managerPage = 0;
         reloadBackgrounds();
         reload4KBackgrounds();
         reloadVideoBackgrounds();
@@ -2553,6 +3135,241 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    // ---------- 桌面设置页 ----------
+
+    private void buildDesktopSettings() {
+        settingsModule = new FrameLayout(this);
+        settingsModule.setBackgroundColor(0xFF0B1017);
+        settingsModule.setVisibility(View.GONE);
+        settingsModule.setClickable(true);
+
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.HORIZONTAL);
+        page.setPadding(dp(28), dp(28), dp(28), dp(20));
+        settingsModule.addView(page, matchParent());
+
+        // ---------- 左侧：一级菜单 ----------
+        // 左侧：右侧 = 4 : 6
+        LinearLayout nav = new LinearLayout(this);
+        nav.setOrientation(LinearLayout.VERTICAL);
+        page.addView(nav, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 4f));
+
+        TextView title = new TextView(this);
+        title.setText("桌面设置");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setPadding(dp(16), 0, 0, dp(12));
+        nav.addView(title);
+
+        settingsNavIconSize = makeSettingsNavItem("图标尺寸");
+        nav.addView(settingsNavIconSize);
+
+        View divider = new View(this);
+        divider.setBackgroundColor(0xFF1F2A36);
+        page.addView(divider, new LinearLayout.LayoutParams(
+                dp(1), ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // ---------- 右侧：二级内容 ----------
+        LinearLayout detail = new LinearLayout(this);
+        detail.setOrientation(LinearLayout.VERTICAL);
+        detail.setPadding(dp(36), 0, 0, 0);
+        page.addView(detail, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 6f));
+
+        TextView section = new TextView(this);
+        section.setText("图标尺寸");
+        section.setTextColor(Color.WHITE);
+        section.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        section.setTypeface(Typeface.DEFAULT_BOLD);
+        detail.addView(section);
+
+        TextView sectionDesc = new TextView(this);
+        sectionDesc.setText("调整 Dock 与抽屉的图标尺寸，每行数量会自动适配。");
+        sectionDesc.setTextColor(0xFF8FA0B3);
+        sectionDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        LinearLayout.LayoutParams sectionDescLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sectionDescLp.topMargin = dp(8);
+        detail.addView(sectionDesc, sectionDescLp);
+
+        // 分段按钮：具体尺寸
+        LinearLayout group = new LinearLayout(this);
+        group.setOrientation(LinearLayout.HORIZONTAL);
+        group.setBackgroundColor(0xFF141C27);
+        settingsSmallButton = makeIconSizeOption("40×40", ICON_SIZE_SMALL);
+        settingsMediumButton = makeIconSizeOption("50×50", ICON_SIZE_MEDIUM);
+        settingsLargeButton = makeIconSizeOption("60×60", ICON_SIZE_LARGE);
+        group.addView(settingsSmallButton);
+        group.addView(settingsMediumButton);
+        group.addView(settingsLargeButton);
+        LinearLayout.LayoutParams groupLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
+        groupLp.topMargin = dp(24);
+        detail.addView(group, groupLp);
+
+        settingsIconDesc = new TextView(this);
+        settingsIconDesc.setTextColor(0xFF8FA0B3);
+        settingsIconDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        LinearLayout.LayoutParams descLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        descLp.topMargin = dp(18);
+        detail.addView(settingsIconDesc, descLp);
+
+        // 左右方向键在菜单与内容之间切换
+        settingsNavIconSize.setId(0x2010);
+        settingsSmallButton.setId(0x2011);
+        settingsNavIconSize.setNextFocusRightId(0x2011);
+        settingsSmallButton.setNextFocusLeftId(0x2010);
+    }
+
+    private TextView makeSettingsNavItem(String label) {
+        TextView item = new TextView(this);
+        item.setText(label);
+        item.setTextColor(Color.WHITE);
+        item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        item.setGravity(Gravity.CENTER_VERTICAL);
+        item.setPadding(dp(16), 0, dp(16), 0);
+        item.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        item.setFocusable(true);
+        item.setFocusableInTouchMode(true);
+        item.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                updateSettingsNav();
+            }
+        });
+        item.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // 一级菜单只有一个分组，点击后直接把焦点交给右侧选项
+                if (settingsSmallButton != null) {
+                    settingsSmallButton.requestFocus();
+                }
+            }
+        });
+        return item;
+    }
+
+    /** 一级菜单当前只有「图标大小」一项，选中项保持深色底，聚焦时高亮 */
+    private void updateSettingsNav() {
+        if (settingsNavIconSize == null) {
+            return;
+        }
+        if (settingsNavIconSize.isFocused()) {
+            settingsNavIconSize.setBackgroundResource(R.drawable.dock_focus);
+        } else {
+            settingsNavIconSize.setBackgroundColor(0xFF1E2A38);
+        }
+    }
+
+    private TextView makeIconSizeOption(String label, final String preset) {
+        TextView option = new TextView(this);
+        option.setText(label);
+        option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        option.setGravity(Gravity.CENTER);
+        option.setFocusable(true);
+        option.setFocusableInTouchMode(true);
+        option.setPadding(dp(18), 0, dp(18), 0);
+        option.setLayoutParams(new LinearLayout.LayoutParams(dp(120), dp(44)));
+        option.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                updateIconSizeOptions();
+            }
+        });
+        option.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setIconSizePreset(preset);
+            }
+        });
+        return option;
+    }
+
+    private void updateIconSizeOptions() {
+        applyIconSizeOption(settingsSmallButton, ICON_SIZE_SMALL);
+        applyIconSizeOption(settingsMediumButton, ICON_SIZE_MEDIUM);
+        applyIconSizeOption(settingsLargeButton, ICON_SIZE_LARGE);
+        if (settingsIconDesc != null) {
+            settingsIconDesc.setText("当前：" + iconSizeDp() + "×" + iconSizeDp()
+                    + " · Dock 与抽屉每行 " + iconsPerRow() + " 个");
+        }
+        updateSettingsNav();
+    }
+
+    private void applyIconSizeOption(TextView option, String preset) {
+        if (option == null) {
+            return;
+        }
+        boolean selected = preset.equals(iconSizePreset);
+        boolean focused = option.isFocused();
+        if (focused) {
+            option.setBackgroundResource(R.drawable.dock_focus);
+        } else {
+            option.setBackgroundColor(selected ? 0xFF1E2A38 : 0xFF141C27);
+        }
+        option.setTextColor(selected || focused ? Color.WHITE : 0xFF8FA0B3);
+    }
+
+    private void setIconSizePreset(String preset) {
+        if (!preset.equals(iconSizePreset)) {
+            iconSizePreset = preset;
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_ICON_SIZE, preset).apply();
+            // 旧尺寸的图标位图必须清掉，否则抽屉里仍是旧大小
+            gridIconCache.clear();
+            drawerSelectedPosition = 0;
+            if (grid != null) {
+                grid.setNumColumns(iconsPerRow());
+                grid.setAdapter(new AppAdapter());
+            }
+            refreshDock();
+            Log.i(TAG, "icon size changed: " + preset + " (" + iconSizeDp()
+                    + "dp, " + iconsPerRow() + " per row)");
+        }
+        updateIconSizeOptions();
+    }
+
+    private void openDesktopSettings() {
+        if (settingsModule == null || settingsOpen) {
+            return;
+        }
+        hideMenuImmediately();
+        settingsOpen = true;
+        updateIconSizeOptions();
+        settingsModule.setVisibility(View.VISIBLE);
+        if (desktopModule != null) {
+            desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        }
+        if (menuModule != null) {
+            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        }
+        // 默认焦点落在左侧一级菜单，按右键进入右侧设置项
+        if (settingsNavIconSize != null) {
+            settingsNavIconSize.requestFocus();
+        }
+    }
+
+    private void closeDesktopSettings() {
+        if (!settingsOpen) {
+            return;
+        }
+        settingsOpen = false;
+        if (settingsModule != null) {
+            settingsModule.setVisibility(View.GONE);
+        }
+        if (desktopModule != null) {
+            desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+        }
+        if (menuModule != null) {
+            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+        }
+        focusFirstDockItem();
+    }
+
     // ---------- 远程导入（局域网 HTTP 上传） ----------
 
     private void buildRemoteImportPage() {
@@ -2561,59 +3378,94 @@ public class LauncherActivity extends Activity {
         remoteModule.setVisibility(View.GONE);
         remoteModule.setClickable(true);
 
+        // 左右两栏：左侧地址/开关/返回，右侧二维码，避免竖排堆叠过挤
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.HORIZONTAL);
+        page.setGravity(Gravity.CENTER_VERTICAL);
+        page.setPadding(dp(64), dp(30), dp(64), dp(26));
+        remoteModule.addView(page, matchParent());
+
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
-        column.setGravity(Gravity.CENTER_HORIZONTAL);
-        column.setPadding(dp(64), dp(34), dp(64), dp(24));
-        remoteModule.addView(column, matchParent());
+        column.setGravity(Gravity.START);
+        LinearLayout.LayoutParams columnParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        columnParams.rightMargin = dp(36);
+        page.addView(column, columnParams);
 
         TextView title = new TextView(this);
         title.setText("远程导入");
         title.setTextColor(Color.WHITE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setGravity(Gravity.CENTER);
         column.addView(title, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView hint = new TextView(this);
         hint.setText("手机扫码，或在同一 WiFi 下用电脑/手机浏览器打开下面的地址，即可上传、切换、删除壁纸。\n"
-                + "上传后需要点「设为当前」才会换画面；离开本页会自动关闭服务。");
+                + "上传后需要点「设为当前」才会换画面；默认离开本页会关闭服务。");
         hint.setTextColor(0xFFB8C4D2);
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        hint.setGravity(Gravity.CENTER);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         hint.setLineSpacing(dp(6), 1f);
-        hint.setPadding(0, dp(10), 0, dp(18));
-        column.addView(hint, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hintParams.topMargin = dp(10);
+        column.addView(hint, hintParams);
 
         remoteUrlView = new TextView(this);
         remoteUrlView.setText("正在启动…");
         remoteUrlView.setTextColor(0xFF4C8DFF);
-        remoteUrlView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
+        remoteUrlView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
         remoteUrlView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         remoteUrlView.setGravity(Gravity.CENTER);
-        remoteUrlView.setPadding(dp(24), dp(10), dp(24), dp(10));
+        remoteUrlView.setPadding(dp(22), dp(10), dp(22), dp(10));
         remoteUrlView.setBackgroundColor(0xFF131B26);
-        column.addView(remoteUrlView);
-
-        remoteQrView = new ImageView(this);
-        remoteQrView.setVisibility(View.GONE);
-        remoteQrView.setBackgroundColor(Color.WHITE);
-        remoteQrView.setPadding(dp(2), dp(2), dp(2), dp(2));
-        LinearLayout.LayoutParams qrParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams urlParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        qrParams.topMargin = dp(14);
-        qrParams.gravity = Gravity.CENTER_HORIZONTAL;
-        column.addView(remoteQrView, qrParams);
+        urlParams.topMargin = dp(18);
+        column.addView(remoteUrlView, urlParams);
 
         remoteStatusView = new TextView(this);
         remoteStatusView.setText("等待连接…");
         remoteStatusView.setTextColor(0xFF7F8FA3);
         remoteStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        remoteStatusView.setGravity(Gravity.CENTER);
-        remoteStatusView.setPadding(0, dp(12), 0, dp(10));
+        remoteStatusView.setPadding(0, dp(10), 0, 0);
         column.addView(remoteStatusView);
+
+        // 保持服务运行：关闭本页后浏览器仍可继续导入/管理
+        LinearLayout keepRow = new LinearLayout(this);
+        keepRow.setOrientation(LinearLayout.HORIZONTAL);
+        keepRow.setGravity(Gravity.CENTER_VERTICAL);
+        keepRow.setPadding(dp(16), dp(6), dp(16), dp(6));
+        keepRow.setFocusable(true);
+        keepRow.setFocusableInTouchMode(true);
+        TextView keepLabel = new TextView(this);
+        keepLabel.setText("关闭本页后保持服务运行");
+        keepLabel.setTextColor(0xFFB8C4D2);
+        keepLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        keepRow.addView(keepLabel, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        remoteKeepSwitch = new Switch(this);
+        remoteKeepSwitch.setFocusable(false);
+        remoteKeepSwitch.setClickable(false);
+        remoteKeepSwitch.setChecked(isRemoteKeepRunning());
+        keepRow.addView(remoteKeepSwitch);
+        keepRow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setRemoteKeepRunning(!isRemoteKeepRunning());
+            }
+        });
+        keepRow.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                v.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
+            }
+        });
+        LinearLayout.LayoutParams keepParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        keepParams.topMargin = dp(18);
+        column.addView(keepRow, keepParams);
 
         View spacer = new View(this);
         column.addView(spacer, new LinearLayout.LayoutParams(
@@ -2621,7 +3473,7 @@ public class LauncherActivity extends Activity {
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER);
+        actions.setGravity(Gravity.START);
         remoteBackButton = makeManagerButton("返回", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -2629,7 +3481,19 @@ public class LauncherActivity extends Activity {
             }
         });
         actions.addView(remoteBackButton);
-        column.addView(actions);
+        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        actionsParams.topMargin = dp(20);
+        column.addView(actions, actionsParams);
+
+        remoteQrView = new ImageView(this);
+        remoteQrView.setVisibility(View.GONE);
+        remoteQrView.setBackgroundColor(Color.WHITE);
+        remoteQrView.setPadding(dp(12), dp(12), dp(12), dp(12));
+        remoteQrView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams qrParams = new LinearLayout.LayoutParams(dp(288), dp(288));
+        qrParams.gravity = Gravity.CENTER_VERTICAL;
+        page.addView(remoteQrView, qrParams);
     }
 
     /** 把当前地址编码成二维码，遥控器扫不到也没关系，地址仍然在下面。 */
@@ -2641,7 +3505,7 @@ public class LauncherActivity extends Activity {
             QrCode.Symbol symbol = QrCode.encode(url, QrCode.EC_M);
             // 静区只留 2 个模块（标准建议 4），把省下的空间给内容区；外侧白卡片再补一点边
             final int quiet = 2;
-            int scale = QrCode.scaleFor(symbol, dp(174), quiet);
+            int scale = QrCode.scaleFor(symbol, dp(264), quiet);
             int[] pixels = QrCode.renderPixels(symbol, quiet, scale, 0xFF000000, 0xFFFFFFFF);
             int px = symbol.size + quiet * 2;
             px *= scale;
@@ -2720,7 +3584,12 @@ public class LauncherActivity extends Activity {
         }
         remoteOpen = false;
         if (remoteServer != null) {
-            remoteServer.stop();
+            if (isRemoteKeepRunning()) {
+                // 开着「保持服务运行」：只关页面，HTTP 服务继续跑
+                Log.i(TAG, "remote import closed, server kept on port " + remoteServer.getPort());
+            } else {
+                remoteServer.stop();
+            }
         }
         if (remoteModule != null) {
             remoteModule.setVisibility(View.GONE);
@@ -2731,13 +3600,37 @@ public class LauncherActivity extends Activity {
             if (managerModule != null) {
                 managerModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
             }
-            keepManagerTabFocus(activeManagerIndex());
+            // 回到管理页只把焦点放回 tab，不定位当前壁纸
+            if (managerType == MANAGER_IMAGES && managerTabImage != null) {
+                managerTabImage.requestFocus();
+            } else if (managerType == MANAGER_VIDEOS && managerTabVideo != null) {
+                managerTabVideo.requestFocus();
+            }
         } else {
             if (desktopModule != null) {
                 desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
             }
             focusFirstDockItem();
         }
+    }
+
+    private boolean isRemoteKeepRunning() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_REMOTE_KEEP, false);
+    }
+
+    private void setRemoteKeepRunning(boolean keep) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_REMOTE_KEEP, keep).apply();
+        if (remoteKeepSwitch != null) {
+            remoteKeepSwitch.setChecked(keep);
+        }
+        if (!keep && !remoteOpen && remoteServer != null) {
+            // 页面已关闭且关掉保持运行：立刻停服
+            remoteServer.stop();
+            Log.i(TAG, "remote import server stopped by keep switch");
+        }
+        Toast.makeText(this,
+                keep ? "已开启：关闭本页后服务继续运行" : "已关闭：离开本页即停止服务",
+                Toast.LENGTH_SHORT).show();
     }
 
     /** 取第一个非回环 IPv4，优先 wlan/eth 网卡 */
@@ -2785,7 +3678,8 @@ public class LauncherActivity extends Activity {
 
         @Override
         public String currentWallpaper() {
-            return current4KName;
+            // 只有图片模式下才有「当前图片」；放视频时图片栏没有当前项
+            return videoWallpaperMode ? null : current4KName;
         }
 
         @Override
@@ -2796,8 +3690,8 @@ public class LauncherActivity extends Activity {
         }
 
         @Override
-        public synchronized String saveWallpaper(String fileName, InputStream in, long length)
-                throws IOException {
+        public synchronized RemoteImportServer.SaveResult saveWallpaper(
+                String fileName, InputStream in, long length) throws IOException {
             File dir = wallpaperDir();
             if (!dir.exists() && !dir.mkdirs()) {
                 return null;
@@ -2831,6 +3725,12 @@ public class LauncherActivity extends Activity {
                 temp.delete();
                 Log.w(TAG, "remote upload not an image: " + fileName);
                 return null;
+            }
+            File dup = findSameContentFile(dir, temp);
+            if (dup != null) {
+                temp.delete();
+                Log.i(TAG, "remote upload duplicated, ignored: " + dup.getName());
+                return new RemoteImportServer.SaveResult(dup.getName(), true);
             }
             String base = fileName;
             String ext = ".jpg";
@@ -2869,7 +3769,7 @@ public class LauncherActivity extends Activity {
                     }
                 }
             });
-            return saved;
+            return new RemoteImportServer.SaveResult(saved, false);
         }
 
         @Override
@@ -2923,7 +3823,8 @@ public class LauncherActivity extends Activity {
 
         @Override
         public String currentVideo() {
-            return currentVideoName;
+            // 只有动态壁纸模式下才有「当前视频」；图片模式时视频栏没有当前项
+            return videoWallpaperMode ? currentVideoName : null;
         }
 
         @Override
@@ -2932,8 +3833,8 @@ public class LauncherActivity extends Activity {
         }
 
         @Override
-        public synchronized String saveVideo(String fileName, InputStream in, long length)
-                throws IOException {
+        public synchronized RemoteImportServer.SaveResult saveVideo(
+                String fileName, InputStream in, long length) throws IOException {
             if (!isVideoName(fileName) || length <= 0 || length > VIDEO_MAX_BYTES) {
                 return null;
             }
@@ -2988,6 +3889,12 @@ public class LauncherActivity extends Activity {
                 } catch (Throwable ignored) {
                 }
             }
+            File dup = findSameContentFile(dir, temp);
+            if (dup != null) {
+                temp.delete();
+                Log.i(TAG, "remote video duplicated, ignored: " + dup.getName());
+                return new RemoteImportServer.SaveResult(dup.getName(), true);
+            }
             String base = fileName;
             if (dot > 0) {
                 base = fileName.substring(0, dot);
@@ -3015,7 +3922,7 @@ public class LauncherActivity extends Activity {
                     }
                 }
             });
-            return saved;
+            return new RemoteImportServer.SaveResult(saved, false);
         }
 
         @Override
@@ -3109,7 +4016,7 @@ public class LauncherActivity extends Activity {
         for (int i = 0; i < managerGrid.getChildCount(); i++) {
             boolean ring = focused && (first + i) == selected;
             managerGrid.getChildAt(i).setBackgroundResource(
-                    ring ? R.drawable.item_focus : R.drawable.tile_bg);
+                    ring ? R.drawable.dock_focus : R.drawable.tile_bg);
         }
     }
 
@@ -3135,6 +4042,41 @@ public class LauncherActivity extends Activity {
         return fourKIndex;
     }
 
+    /** 当前分栏当前页的壁纸（最多 MANAGER_PAGE_SIZE 个） */
+    private List<BackgroundItem> activeManagerPageItems() {
+        List<BackgroundItem> all = activeManagerItems();
+        int start = managerPage * MANAGER_PAGE_SIZE;
+        if (start >= all.size()) {
+            return Collections.emptyList();
+        }
+        return all.subList(start, Math.min(start + MANAGER_PAGE_SIZE, all.size()));
+    }
+
+    private int managerPageCount() {
+        int total = activeManagerItems().size();
+        return total == 0 ? 1 : (total + MANAGER_PAGE_SIZE - 1) / MANAGER_PAGE_SIZE;
+    }
+
+    /** 把页码夹到合法范围；index >= 0 时切到该壁纸所在的页 */
+    private void ensureManagerPageForIndex(int index) {
+        if (index >= 0) {
+            managerPage = index / MANAGER_PAGE_SIZE;
+        }
+        int pages = managerPageCount();
+        if (managerPage < 0) {
+            managerPage = 0;
+        } else if (managerPage >= pages) {
+            managerPage = pages - 1;
+        }
+    }
+
+    private int managerLocalIndex(int globalIndex) {
+        if (globalIndex < 0) {
+            return 0;
+        }
+        return globalIndex % MANAGER_PAGE_SIZE;
+    }
+
     /** 让网格按整行对齐，避免顶部只露出上一行的几像素 */
     /** 壁纸被应用/移动/删除后：网格滚到指定位置，焦点仍留在 tab 行 */
     private void keepManagerTabFocus(int selection) {
@@ -3143,7 +4085,11 @@ public class LauncherActivity extends Activity {
         }
         List<BackgroundItem> items = activeManagerItems();
         if (selection >= 0 && selection < items.size()) {
-            managerGrid.setSelection(selection);
+            ensureManagerPageForIndex(selection);
+            if (managerAdapter != null) {
+                managerAdapter.notifyDataSetChanged();
+            }
+            managerGrid.setSelection(managerLocalIndex(selection));
             snapManagerGridToRow();
         }
         // 操作完回到当前分栏的 tab，而不是某个功能按钮
@@ -3176,11 +4122,115 @@ public class LauncherActivity extends Activity {
         });
     }
 
+    /** 焦点进入网格并选中本页第一张（从 tab / 分页条按 ↓ 时用） */
+    private void focusManagerGridTop() {
+        if (managerGrid == null || activeManagerPageItems().isEmpty()) {
+            return;
+        }
+        managerGrid.setSelectionFromTop(0, 0);
+        managerGrid.requestFocus();
+    }
+
+    /** 切换页码并刷新网格；焦点留在底部右侧的分页条上 */
+    private boolean switchManagerPage(int page) {
+        int pages = managerPageCount();
+        if (pages <= 0) {
+            return false;
+        }
+        if (page < 0) {
+            page = 0;
+        } else if (page >= pages) {
+            page = pages - 1;
+        }
+        if (page == managerPage) {
+            return false;
+        }
+        managerPage = page;
+        if (managerAdapter != null) {
+            managerAdapter.notifyDataSetChanged();
+        }
+        updateManagerStats();
+        if (managerGrid == null) {
+            return true;
+        }
+        // 重新挂适配器强制 GridView 丢掉上一页的滚动偏移，否则新页会停在中间某一行
+        managerGrid.setAdapter(null);
+        managerGrid.setAdapter(managerAdapter);
+        managerGrid.setSelectionFromTop(0, 0);
+        // 不主动移动焦点：点击「下一页」后焦点仍留在该按钮上
+        return true;
+    }
+
+    /** 分页条上的上一页 / 下一页 */
+    private void jumpManagerPage(int page) {
+        if (switchManagerPage(page)) {
+            Log.i(TAG, "wallpaper page jumped: page=" + (managerPage + 1));
+        }
+    }
+
+    /** 弹出页码选择：壁纸页数多时直接跳到某一页 */
+    private void showPagePicker() {
+        final int pages = managerPageCount();
+        if (pages <= 1) {
+            return;
+        }
+        final String[] labels = new String[pages];
+        for (int i = 0; i < pages; i++) {
+            labels[i] = "第 " + (i + 1) + " 页" + (i == managerPage ? "（当前）" : "");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("选择页码")
+                .setItems(labels, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        if (switchManagerPage(which) && managerPageButton != null) {
+                            managerPageButton.requestFocus();
+                        }
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 同步分页条的文案、可用状态和显隐 */
+    private void updateManagerPager() {
+        if (managerPagerRow == null) {
+            return;
+        }
+        int pages = managerPageCount();
+        boolean show = pages > 1;
+        if (managerPagerRow.getVisibility() != (show ? View.VISIBLE : View.GONE)) {
+            boolean hadFocus = isFocusIn(managerPagerRow);
+            managerPagerRow.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (!show && hadFocus) {
+                if (managerType == MANAGER_IMAGES && managerTabImage != null) {
+                    managerTabImage.requestFocus();
+                } else if (managerTabVideo != null) {
+                    managerTabVideo.requestFocus();
+                }
+            }
+        }
+        if (!show) {
+            return;
+        }
+        if (managerPageButton != null) {
+            managerPageButton.setText("第 " + (managerPage + 1) + " / " + pages + " 页");
+        }
+        if (managerPrevPageButton != null) {
+            // 不设 setEnabled(false)：禁用会让焦点从按钮上掉走，只做置灰
+            managerPrevPageButton.setAlpha(managerPage > 0 ? 1f : 0.4f);
+        }
+        if (managerNextPageButton != null) {
+            managerNextPageButton.setAlpha(managerPage < pages - 1 ? 1f : 0.4f);
+        }
+    }
+
     private void setManagerType(int type) {
         if (managerType == type) {
             return;
         }
         managerType = type;
+        managerPage = 0;
         updateManagerTabs();
         refreshManager();
         // 切换分栏只换内容，焦点落在新选中的 tab（下键才进网格）
@@ -3205,13 +4255,10 @@ public class LauncherActivity extends Activity {
             managerTabVideo.setText("动态壁纸");
             applyManagerTabVisual(managerTabVideo, managerType == MANAGER_VIDEOS);
         }
-        if (managerImportButton != null) {
-            managerImportButton.setText(managerType == MANAGER_VIDEOS ? "导入视频" : "导入图片");
-        }
         if (managerEmpty != null) {
             managerEmpty.setText(managerType == MANAGER_VIDEOS
-                    ? "还没有动态壁纸\n点下面「导入视频」，从 U 盘或本地存储添加"
-                    : "还没有图片壁纸\n点下面「导入图片」，从 U 盘或本地存储添加");
+                    ? "还没有动态壁纸\n点下面「导入壁纸」，从 U 盘或本地存储添加"
+                    : "还没有图片壁纸\n点下面「导入壁纸」，从 U 盘或本地存储添加");
         }
     }
 
@@ -3219,7 +4266,7 @@ public class LauncherActivity extends Activity {
     private void applyManagerTabVisual(TextView tab, boolean selected) {
         tab.setTextColor(selected ? Color.WHITE : 0xFF8FA0B3);
         if (tab.hasFocus()) {
-            tab.setBackgroundResource(R.drawable.item_focus);
+            tab.setBackgroundResource(R.drawable.dock_focus);
         } else {
             tab.setBackgroundColor(selected ? 0xFF1E2A38 : 0xFF141C27);
         }
@@ -3239,7 +4286,7 @@ public class LauncherActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 if (hasFocus) {
-                    v.setBackgroundResource(R.drawable.item_focus);
+                    v.setBackgroundResource(R.drawable.dock_focus);
                 } else {
                     v.setBackgroundColor(managerType == type ? 0xFF1E2A38 : 0xFF141C27);
                 }
@@ -3259,6 +4306,8 @@ public class LauncherActivity extends Activity {
 
     private void refreshManager() {
         updateManagerTabs();
+        // 只把页码夹到合法范围，不因为「当前壁纸」而跳页
+        ensureManagerPageForIndex(-1);
         if (managerAdapter != null) {
             managerAdapter.notifyDataSetChanged();
         }
@@ -3278,10 +4327,21 @@ public class LauncherActivity extends Activity {
                 && (managerGrid == null || isFocusIn(managerGrid))) {
             managerImportButton.requestFocus();
         }
-        if (!empty && managerOpen && managerGrid != null && isFocusIn(managerGrid)) {
-            managerGrid.setSelection(Math.max(activeManagerIndex(), 0));
+        int index = activeManagerIndex();
+        if (!empty && managerOpen && managerGrid != null && isFocusIn(managerGrid)
+                && index >= 0 && index / MANAGER_PAGE_SIZE == managerPage) {
+            managerGrid.setSelection(managerLocalIndex(index));
             snapManagerGridToRow();
         }
+        updateManagerStats();
+    }
+
+    private void updateManagerStats() {
+        if (managerStats == null) {
+            updateManagerPager();
+            return;
+        }
+        List<BackgroundItem> items = activeManagerItems();
         String current = activeManagerCurrentName();
         StringBuilder sb = new StringBuilder();
         if (managerType == MANAGER_VIDEOS) {
@@ -3293,6 +4353,7 @@ public class LauncherActivity extends Activity {
             sb.append("\n当前 ").append(current);
         }
         managerStats.setText(sb.toString());
+        updateManagerPager();
     }
 
     private long totalVideoSize() {
@@ -3302,6 +4363,20 @@ public class LauncherActivity extends Activity {
             total += file.length();
         }
         return total;
+    }
+
+    /** 背景设置里展示的缓存概况：已生成张数 + 占用体积 */
+    private String fourKCacheSummary() {
+        File[] files = fourKCacheDir().listFiles();
+        int count = files == null ? 0 : files.length;
+        long bytes = 0;
+        if (files != null) {
+            for (File f : files) {
+                bytes += f.length();
+            }
+        }
+        return "4K 缓存：已生成 " + count + " / " + fourKItems.size()
+                + " 张，占用 " + formatSize(bytes) + "。";
     }
 
     private static String formatSize(long bytes) {
@@ -3317,12 +4392,12 @@ public class LauncherActivity extends Activity {
     private final class WallpaperAdapter extends BaseAdapter {
         @Override
         public int getCount() {
-            return activeManagerItems().size();
+            return activeManagerPageItems().size();
         }
 
         @Override
         public Object getItem(int position) {
-            return activeManagerItems().get(position);
+            return activeManagerPageItems().get(position);
         }
 
         @Override
@@ -3332,7 +4407,7 @@ public class LauncherActivity extends Activity {
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
-            List<BackgroundItem> items = activeManagerItems();
+            List<BackgroundItem> items = activeManagerPageItems();
             if (position < 0 || position >= items.size()) {
                 return new FrameLayout(LauncherActivity.this);
             }
@@ -3342,7 +4417,7 @@ public class LauncherActivity extends Activity {
 
             FrameLayout tile = new FrameLayout(LauncherActivity.this);
             tile.setPadding(dp(3), dp(3), dp(3), dp(3));
-            tile.setBackgroundResource(selected ? R.drawable.item_focus : R.drawable.tile_bg);
+            tile.setBackgroundResource(selected ? R.drawable.dock_focus : R.drawable.tile_bg);
 
             ImageView image = new ImageView(LauncherActivity.this);
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -3392,7 +4467,7 @@ public class LauncherActivity extends Activity {
             }
 
             tile.setLayoutParams(new AbsListView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(138)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(100)));
             return tile;
         }
     }
@@ -3607,7 +4682,7 @@ public class LauncherActivity extends Activity {
     }
 
     /** 用 MediaCodec 解出视频第 1 秒附近的一帧；MediaMetadataRetriever 拿不到 4K 帧时兜底 */
-    private Bitmap decodeVideoFrameWithCodec(String path, int targetW) {
+    static Bitmap decodeVideoFrameWithCodec(String path, int targetW) {
         MediaExtractor extractor = null;
         MediaCodec codec = null;
         try {
@@ -3695,7 +4770,7 @@ public class LauncherActivity extends Activity {
     }
 
     /** YUV_420_888 的 Image 转 Bitmap（走 NV21 + JPEG，省掉手写 YUV→RGB） */
-    private Bitmap yuvImageToBitmap(Image image, int targetW) {
+    static Bitmap yuvImageToBitmap(Image image, int targetW) {
         int width = image.getWidth() & ~1;
         int height = image.getHeight() & ~1;
         if (width <= 0 || height <= 0) {
@@ -3811,6 +4886,7 @@ public class LauncherActivity extends Activity {
         }
         current4KName = name;
         fourKIndex = index;
+        setWallpaperCleared(false);
         leaveVideoWallpaperMode();
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_4K_BACKGROUND, name)
@@ -3890,16 +4966,42 @@ public class LauncherActivity extends Activity {
             return;
         }
         File file = new File(item.filePath);
-        boolean deleted = file.delete();
-        if (!deleted) {
+        boolean wasCurrent = item.name.equals(current4KName);
+        boolean wasVideoMode = videoWallpaperMode;
+        if (!file.delete()) {
             Toast.makeText(this, "删除失败：" + item.name, Toast.LENGTH_LONG).show();
             return;
         }
         deleteCacheFor(item);
         deleteThumbFor(item);
-        reloadBackgrounds();
+        if (wasCurrent && !wasVideoMode) {
+            // 删除的就是正在显示的静态壁纸：直接置黑，不自动挑别的
+            setWallpaperCleared(true);
+            current4KName = null;
+            fourKIndex = -1;
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .remove(KEY_4K_BACKGROUND).apply();
+        }
         reload4KBackgrounds();
-        refresh4KStaticMode();
+        reloadBackgrounds();
+        if (wasCurrent && !wasVideoMode) {
+            fourKStaticMode = false;
+            fourKEncoding = false;
+            fourKEncodeToken++;
+            fourKVideoReady = false;
+            fourKPreparing = false;
+            stop4KStatic();
+            clearWallpaperToBlack();
+            Toast.makeText(this, "已删除当前壁纸，桌面已置黑", Toast.LENGTH_SHORT).show();
+        } else {
+            if (wasCurrent) {
+                // 动态壁纸还在播，删的只是图片备用项：只更新记录
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putString(KEY_4K_BACKGROUND,
+                                current4KName == null ? "" : current4KName).apply();
+            }
+            refresh4KStaticMode();
+        }
         refreshManager();
         if (managerOpen && !fourKItems.isEmpty()) {
             keepManagerTabFocus(Math.max(fourKIndex, 0));
@@ -3909,27 +5011,40 @@ public class LauncherActivity extends Activity {
     }
 
     private void deleteVideoWallpaper(BackgroundItem item) {
-        boolean wasCurrent = item.name.equals(currentVideoName);
+        boolean wasCurrent = videoWallpaperMode && item.name.equals(currentVideoName);
         File file = new File(item.filePath);
         if (!file.delete()) {
             Toast.makeText(this, "删除失败：" + item.name, Toast.LENGTH_LONG).show();
             return;
         }
+        deleteThumbFor(item);
         if (wasCurrent) {
+            // 删除的是正在播放的动态壁纸：直接置黑，不自动切别的视频/图片
+            setWallpaperCleared(true);
             videoWallpaperMode = false;
             stopVideoWallpaper();
-            bgFront.setVisibility(View.VISIBLE);
-            bgBack.setVisibility(View.VISIBLE);
             currentVideoName = null;
             videoIndex = -1;
+            current4KName = null;
+            fourKIndex = -1;
+            fourKStaticMode = false;
+            fourKEncoding = false;
+            fourKEncodeToken++;
+            fourKVideoReady = false;
+            fourKPreparing = false;
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .remove(KEY_VIDEO_BACKGROUND)
+                    .remove(KEY_4K_BACKGROUND)
                     .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
-        }
-        deleteThumbFor(item);
-        reloadVideoBackgrounds();
-        if (!videoWallpaperMode) {
-            refresh4KStaticMode();
+            reloadVideoBackgrounds();
+            stop4KStatic();
+            clearWallpaperToBlack();
+            Toast.makeText(this, "已删除当前壁纸，桌面已置黑", Toast.LENGTH_SHORT).show();
+        } else {
+            reloadVideoBackgrounds();
+            if (!videoWallpaperMode) {
+                refresh4KStaticMode();
+            }
         }
         refreshManager();
         if (managerOpen && !videoItems.isEmpty()) {
@@ -4057,17 +5172,16 @@ public class LauncherActivity extends Activity {
 
     /** 「导入」按钮：先选导入方式，再走对应的流程。 */
     private void showImportChooser() {
-        final boolean video = managerType == MANAGER_VIDEOS;
         final List<File> usbRoots = usbImportRoots();
         final List<String> labels = new ArrayList<>();
-        labels.add(video ? "从本机导入视频" : "从本机导入图片");
+        labels.add("从本机导入");
         final int usbIndex = usbRoots.isEmpty() ? -1 : labels.size();
         if (usbIndex >= 0) {
             labels.add("从 USB 设备导入");
         }
         labels.add("远程导入（手机/电脑网页上传）");
         new AlertDialog.Builder(this)
-                .setTitle(video ? "导入视频" : "导入图片")
+                .setTitle("导入壁纸")
                 .setItems(labels.toArray(new String[0]), new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
@@ -4605,10 +5719,10 @@ public class LauncherActivity extends Activity {
             }
             if (fourKStaticEnabled()) {
                 if (fourKItems.size() > 1) {
-                    switch4KStatic(1);
+                    switch4KStatic(1, slideshowRandom);
                 }
             } else if (backgroundItems.size() > 1) {
-                advanceBackground(1);
+                advanceBackground(1, slideshowRandom);
             }
             handler.postDelayed(this, slideshowIntervalSec * 1000L);
         }
@@ -4647,6 +5761,13 @@ public class LauncherActivity extends Activity {
             }
         }
         showBackgroundImmediately(index);
+        if (isWallpaperCleared()) {
+            // 「删掉当前壁纸」的黑屏状态：列表照常刷新，但不重新铺图、不启轮播
+            currentBackgroundName = null;
+            backgroundIndex = -1;
+            clearWallpaperToBlack();
+            return;
+        }
         resetBgTimer();
         String source = backgroundItems.isEmpty()
                 ? "none"
@@ -4725,6 +5846,10 @@ public class LauncherActivity extends Activity {
     }
 
     private void showBackgroundImmediately(int index) {
+        if (isWallpaperCleared()) {
+            clearWallpaperToBlack();
+            return;
+        }
         bgSwitching = false;
         bgFront.animate().cancel();
         bgBack.animate().cancel();
@@ -4846,17 +5971,93 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    /** 在目录里找与候选文件内容完全相同的文件（先比长度，再逐字节比），没有返回 null */
+    private static File findSameContentFile(File dir, File candidate) {
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return null;
+        }
+        long length = candidate.length();
+        for (File f : files) {
+            if (!f.isFile() || f.length() != length) {
+                continue;
+            }
+            if (f.getName().startsWith(".upload-")) {
+                continue;
+            }
+            if (sameBytes(candidate, f)) {
+                return f;
+            }
+        }
+        return null;
+    }
+
+    private static boolean sameBytes(File a, File b) {
+        InputStream inA = null;
+        InputStream inB = null;
+        try {
+            inA = new BufferedInputStream(new FileInputStream(a), 64 * 1024);
+            inB = new BufferedInputStream(new FileInputStream(b), 64 * 1024);
+            byte[] bufA = new byte[64 * 1024];
+            byte[] bufB = new byte[64 * 1024];
+            while (true) {
+                int nA = readFully(inA, bufA);
+                int nB = readFully(inB, bufB);
+                if (nA != nB) {
+                    return false;
+                }
+                if (nA <= 0) {
+                    return true;
+                }
+                for (int i = 0; i < nA; i++) {
+                    if (bufA[i] != bufB[i]) {
+                        return false;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            return false;
+        } finally {
+            closeQuietly(inA);
+            closeQuietly(inB);
+        }
+    }
+
+    private static int readFully(InputStream in, byte[] buf) throws IOException {
+        int total = 0;
+        while (total < buf.length) {
+            int n = in.read(buf, total, buf.length - total);
+            if (n < 0) {
+                break;
+            }
+            total += n;
+        }
+        return total;
+    }
+
     /** 自动轮播：两张图交叉淡入淡出，避免直接闪切 */
     private void advanceBackground(int delta) {
-        if (fourKStaticEnabled() || backgroundItems.size() < 2 || bgSwitching) {
+        advanceBackground(delta, false);
+    }
+
+    /** random=true 时随机挑一张（不重复当前），用于「播放顺序=随机」 */
+    private void advanceBackground(int delta, boolean random) {
+        if (isWallpaperCleared()
+                || fourKStaticEnabled() || backgroundItems.size() < 2 || bgSwitching) {
             return;
         }
+        int size = backgroundItems.size();
         int next;
         if (backgroundIndex < 0) {
-            next = delta > 0 ? 0 : backgroundItems.size() - 1;
+            next = random ? new java.util.Random().nextInt(size)
+                    : (delta > 0 ? 0 : size - 1);
+        } else if (random) {
+            next = new java.util.Random().nextInt(size - 1);
+            if (next >= backgroundIndex) {
+                next++;
+            }
         } else {
-            next = (backgroundIndex + delta + backgroundItems.size())
-                    % backgroundItems.size();
+            next = (backgroundIndex + delta + size) % size;
         }
         if (next == backgroundIndex) {
             return;
@@ -5271,13 +6472,15 @@ public class LauncherActivity extends Activity {
         if (managerOpen) {
             refreshManager();
             keepManagerTabFocus(-1);
-        } else {
+        } else if (!settingsOpen) {
             // 兜底：从抽屉里开过应用后，桌面层可能还停在隐藏状态
             if (!drawerOpen && homeLayer != null
                     && homeLayer.getVisibility() != View.VISIBLE) {
                 showHomeLayer(0);
             }
-            focusFirstDockItem();
+            if (!desktopFocusCleared) {
+                focusFirstDockItem();
+            }
         }
     }
 
@@ -5286,6 +6489,23 @@ public class LauncherActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         // singleTask 下按 HOME 可能只走 onNewIntent，不触发 onResume
+        // 在壁纸管理页（或远程导入页）按 HOME：直接回桌面
+        boolean homePressed = intent != null
+                && Intent.ACTION_MAIN.equals(intent.getAction())
+                && intent.hasCategory(Intent.CATEGORY_HOME);
+        boolean homeOnDesktop = homePressed && !remoteOpen && !managerOpen && !settingsOpen
+                && !menuOpen && !drawerOpen;
+        if (homePressed) {
+            if (remoteOpen) {
+                closeRemoteImport();
+            }
+            if (managerOpen) {
+                closeWallpaperManager();
+            }
+            if (settingsOpen) {
+                closeDesktopSettings();
+            }
+        }
         hideMenuImmediately();
         reloadBackgrounds();
         reload4KBackgrounds();
@@ -5295,7 +6515,12 @@ public class LauncherActivity extends Activity {
                 && homeLayer.getVisibility() != View.VISIBLE) {
             showHomeLayer(0);
         }
-        focusFirstDockItem();
+        if (homeOnDesktop) {
+            // 桌面上按 HOME：不自动选中第一个图标
+            clearDesktopFocus();
+        } else {
+            focusFirstDockItem();
+        }
         if (videoWallpaperMode) {
             restoreVideoWallpaperOnForeground();
         } else {
@@ -5345,7 +6570,8 @@ public class LauncherActivity extends Activity {
                             ((BaseAdapter) grid.getAdapter()).notifyDataSetChanged();
                         }
                         refreshDock();
-                        if (getCurrentFocus() == null && wallpaperControls != null) {
+                        if (getCurrentFocus() == null && !desktopFocusCleared
+                                && wallpaperControls != null) {
                             focusFirstDockItem();
                         }
                         Log.i(TAG, "deferred app scan done: " + allApps.size());
@@ -5423,6 +6649,7 @@ public class LauncherActivity extends Activity {
         handler.removeCallbacks(clockTick);
         handler.removeCallbacks(weatherTick);
         handler.removeCallbacks(bgTick);
+        handler.removeCallbacks(videoHealthTick);
         if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
             wallpaperVideo.pause();
         }
@@ -5439,7 +6666,10 @@ public class LauncherActivity extends Activity {
             remoteServer.stop();
             remoteServer = null;
         }
+        stopVideoWallpaper();
         stop4KStatic();
+        // 清掉所有排队中的延时任务，避免它们继续持有已销毁的 Activity
+        handler.removeCallbacksAndMessages(null);
     }
 
     // ---------- 抽屉 ----------
@@ -5482,7 +6712,26 @@ public class LauncherActivity extends Activity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (managerOpen) {
+        // 有的机型会把 HOME 直接派发给当前 Activity
+        if (keyCode == KeyEvent.KEYCODE_HOME) {
+            // 已经在桌面（没有任何浮层/抽屉/菜单）时，HOME 只做取消选中
+            boolean onDesktop = !remoteOpen && !managerOpen && !settingsOpen
+                    && !menuOpen && !drawerOpen;
+            if (remoteOpen) {
+                closeRemoteImport();
+            }
+            if (managerOpen) {
+                closeWallpaperManager();
+            }
+            if (settingsOpen) {
+                closeDesktopSettings();
+            }
+            if (onDesktop) {
+                clearDesktopFocus();
+            }
+            return true;
+        }
+        if (managerOpen || settingsOpen) {
             return super.onKeyDown(keyCode, event);
         }
         if (!drawerOpen && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
@@ -5502,6 +6751,10 @@ public class LauncherActivity extends Activity {
             closeWallpaperManager();
             return;
         }
+        if (settingsOpen) {
+            closeDesktopSettings();
+            return;
+        }
         if (menuOpen) {
             closeMenu();
             return;
@@ -5510,7 +6763,8 @@ public class LauncherActivity extends Activity {
             closeDrawer();
             return;
         }
-        // 桌面上按返回不退出
+        // 桌面上按返回不退出，只取消当前图标的选中
+        clearDesktopFocus();
     }
 
     // ---------- 顶部菜单条 ----------
@@ -5670,18 +6924,26 @@ public class LauncherActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        // 管理页打开时只处理页面内的焦点导航，不再触发桌面菜单/抽屉
-        if (managerOpen) {
+        // 管理页/设置页打开时只处理页面内的焦点导航，不再触发桌面菜单/抽屉
+        if (managerOpen || settingsOpen) {
             return super.dispatchKeyEvent(event);
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
             int key = event.getKeyCode();
             if (menuOpen) {
-                // 菜单打开时，上/下都收起菜单
-                if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                // 菜单打开时，上/下或再按菜单键都收起菜单
+                if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN
+                        || key == KeyEvent.KEYCODE_MENU) {
                     closeMenu();
                     return true;
                 }
+            } else if (key == KeyEvent.KEYCODE_MENU) {
+                // 遥控器菜单键：呼出顶部菜单条（应用抽屉打开时先收起抽屉）
+                if (drawerOpen) {
+                    closeDrawer();
+                }
+                openMenu();
+                return true;
             } else if (!drawerOpen && key == KeyEvent.KEYCODE_DPAD_UP) {
                 // dock 和左右键现在同一行，上键一律直接呼出菜单
                 openMenu();
@@ -5777,7 +7039,7 @@ public class LauncherActivity extends Activity {
         }
         dock.removeAllViews();
         List<AppEntry> source = buildDockSource();
-        int count = Math.min(source.size(), DOCK_SHOW);
+        int count = Math.min(source.size(), iconsPerRow());
         if (count == 0) {
             TextView empty = new TextView(this);
             empty.setText("　");
@@ -5830,8 +7092,6 @@ public class LauncherActivity extends Activity {
         LinearLayout item = new LinearLayout(this);
         item.setOrientation(LinearLayout.VERTICAL);
         item.setGravity(Gravity.CENTER);
-        item.setPadding(dp(10), dp(8), dp(10), dp(6));
-        item.setBackgroundResource(R.drawable.tile_bg);
         item.setFocusable(true);
         item.setFocusableInTouchMode(true);
         // 重建 dock 时靠这个 key 把焦点还给同一个应用
@@ -5842,28 +7102,35 @@ public class LauncherActivity extends Activity {
         lp.rightMargin = dp(12);
         item.setLayoutParams(lp);
 
+        int iconSize = dp(iconSizeDp());
+        // 遮罩层始终是正方形，图标放大缩小时不会被拉成长条；
+        // 未聚焦时不画遮罩，聚焦时才显示亮色遮罩
+        final FrameLayout mask = new FrameLayout(this);
+        int maskSize = dp(iconMaskDp());
+        item.addView(mask, new LinearLayout.LayoutParams(maskSize, maskSize));
+
         ImageView icon = new ImageView(this);
-        int size = dp(46);
-        icon.setImageBitmap(squareIcon(entry.icon, size));
-        item.addView(icon, new LinearLayout.LayoutParams(size, size));
+        icon.setImageBitmap(squareIcon(entry.icon, iconSize));
+        mask.addView(icon, new FrameLayout.LayoutParams(
+                iconSize, iconSize, Gravity.CENTER));
 
         TextView label = new TextView(this);
         label.setText(entry.label);
         label.setTextColor(Color.WHITE);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, iconLabelSp());
+        label.setShadowLayer(4f, 0f, 1f, 0xCC000000);
         label.setSingleLine(true);
         label.setEllipsize(TextUtils.TruncateAt.END);
         label.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
-                dp(64), ViewGroup.LayoutParams.WRAP_CONTENT);
-        tlp.topMargin = dp(3);
+                dp(iconMaskDp() + 16), ViewGroup.LayoutParams.WRAP_CONTENT);
+        tlp.topMargin = dp(4);
         item.addView(label, tlp);
 
         item.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus
-                        ? R.drawable.item_focus : R.drawable.tile_bg);
+                mask.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
             }
         });
         item.setOnClickListener(new View.OnClickListener() {
@@ -5947,7 +7214,7 @@ public class LauncherActivity extends Activity {
     private Bitmap gridIcon(AppEntry entry) {
         Bitmap cached = gridIconCache.get(entry.key);
         if (cached == null) {
-            cached = squareIcon(entry.icon, dp(48));
+            cached = squareIcon(entry.icon, dp(iconSizeDp()));
             gridIconCache.put(entry.key, cached);
         }
         return cached;
@@ -5991,6 +7258,33 @@ public class LauncherActivity extends Activity {
         if (dock != null && dock.getChildCount() > 0) {
             dock.getChildAt(0).requestFocus();
         }
+    }
+
+    /** 取消桌面图标选中：把焦点交给一个不可见的空焦点，Dock 图标全部无遮罩 */
+    private void clearDesktopFocus() {
+        if (homeLayer == null) {
+            return;
+        }
+        // 部分 TV 系统在没有焦点时会强行把焦点给第一个可聚焦控件，
+        // 所以这里主动聚焦一个 1dp 的透明焦点位，保证所有图标都保持未选中。
+        if (focusSink == null) {
+            focusSink = new View(this);
+            focusSink.setFocusable(true);
+            focusSink.setFocusableInTouchMode(true);
+            focusSink.setBackgroundColor(Color.TRANSPARENT);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    dp(1), dp(1), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            homeLayer.addView(focusSink, lp);
+        }
+        focusSink.requestFocus();
+        desktopFocusCleared = true;
+    }
+
+    @Override
+    public void onUserInteraction() {
+        super.onUserInteraction();
+        // 用户再次操作遥控器后恢复正常自动聚焦
+        desktopFocusCleared = false;
     }
 
     // ---------- 应用列表 ----------
@@ -6091,12 +7385,14 @@ public class LauncherActivity extends Activity {
         public View getView(int position, View convertView, ViewGroup parent) {
             FrameLayout cell;
             LinearLayout tile;
+            FrameLayout mask;
             if (convertView instanceof FrameLayout
                     && ((FrameLayout) convertView).getChildCount() > 0) {
                 cell = (FrameLayout) convertView;
                 tile = (LinearLayout) cell.getChildAt(0);
+                mask = (FrameLayout) tile.getChildAt(0);
             } else {
-                // 外层 cell 负责占满 7 列格子，内层 tile 固定 84dp 宽并居中
+                // 外层 cell 负责占满整行格子，内层 tile 固定宽度并居中
                 cell = new FrameLayout(LauncherActivity.this);
                 cell.setLayoutParams(new AbsListView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -6104,33 +7400,39 @@ public class LauncherActivity extends Activity {
                 tile = new LinearLayout(LauncherActivity.this);
                 tile.setOrientation(LinearLayout.VERTICAL);
                 tile.setGravity(Gravity.CENTER);
-                tile.setPadding(dp(2), dp(6), dp(2), dp(4));
+
+                // 正方形遮罩层：只包住图标，名称放在遮罩下方
+                mask = new FrameLayout(LauncherActivity.this);
+                mask.setId(0x2003);
+                int maskSize = dp(iconMaskDp());
+                tile.addView(mask, new LinearLayout.LayoutParams(maskSize, maskSize));
 
                 ImageView icon = new ImageView(LauncherActivity.this);
                 icon.setId(0x2001);
-                int size = dp(48);
-                tile.addView(icon, new LinearLayout.LayoutParams(size, size));
+                int size = dp(iconSizeDp());
+                mask.addView(icon, new FrameLayout.LayoutParams(
+                        size, size, Gravity.CENTER));
 
                 TextView label = new TextView(LauncherActivity.this);
                 label.setId(0x2002);
                 label.setTextColor(Color.WHITE);
-                label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                label.setTextSize(TypedValue.COMPLEX_UNIT_SP, iconLabelSp());
                 label.setGravity(Gravity.CENTER);
                 label.setSingleLine(true);
                 label.setEllipsize(TextUtils.TruncateAt.END);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.topMargin = dp(3);
+                lp.topMargin = dp(4);
                 tile.addView(label, lp);
 
                 FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(
-                        dp(84), ViewGroup.LayoutParams.WRAP_CONTENT);
+                        dp(iconMaskDp() + 16), ViewGroup.LayoutParams.WRAP_CONTENT);
                 tlp.gravity = Gravity.CENTER_HORIZONTAL;
                 cell.addView(tile, tlp);
             }
 
-            tile.setBackgroundResource(position == drawerSelectedPosition
-                    ? R.drawable.item_focus : R.drawable.tile_bg);
+            mask.setBackgroundResource(position == drawerSelectedPosition
+                    ? R.drawable.dock_focus : R.drawable.tile_bg);
 
             AppEntry entry = allApps.get(position);
             ((ImageView) tile.findViewById(0x2001)).setImageBitmap(gridIcon(entry));

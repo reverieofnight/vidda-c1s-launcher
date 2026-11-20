@@ -57,8 +57,8 @@ public class RemoteImportServer {
         /** backgrounds_4k 目录 */
         File wallpaperDir();
 
-        /** 把 length 字节的流保存为壁纸，返回最终文件名；失败返回 null */
-        String saveWallpaper(String fileName, InputStream in, long length) throws IOException;
+        /** 把 length 字节的流保存为壁纸；失败返回 null，内容重复时 duplicate=true */
+        SaveResult saveWallpaper(String fileName, InputStream in, long length) throws IOException;
 
         boolean applyWallpaper(String name);
 
@@ -73,14 +73,25 @@ public class RemoteImportServer {
         /** backgrounds_video 目录 */
         File videoDir();
 
-        /** 保存视频壁纸，返回最终文件名；失败返回 null */
-        String saveVideo(String fileName, InputStream in, long length) throws IOException;
+        /** 保存视频壁纸；失败返回 null，内容重复时 duplicate=true */
+        SaveResult saveVideo(String fileName, InputStream in, long length) throws IOException;
 
         boolean applyVideo(String name);
 
         boolean deleteVideo(String name);
 
         void onRemoteEvent(String message);
+    }
+
+    /** 保存结果：name 为最终（或已存在的同名）文件，duplicate 表示内容已存在、本次被忽略 */
+    public static final class SaveResult {
+        public final String name;
+        public final boolean duplicate;
+
+        public SaveResult(String name, boolean duplicate) {
+            this.name = name;
+            this.duplicate = duplicate;
+        }
     }
 
     private final Host host;
@@ -92,6 +103,8 @@ public class RemoteImportServer {
                     return size() > THUMB_CACHE_MAX;
                 }
             });
+    /** 视频取帧串行化：本机硬解码器并发初始化会失败 */
+    private static final Object VIDEO_THUMB_LOCK = new Object();
 
     private ServerSocket serverSocket;
     private Thread acceptThread;
@@ -390,6 +403,23 @@ public class RemoteImportServer {
     }
 
     private byte[] buildVideoThumb(File file) {
+        // 本机的硬解码器资源有限，并发取帧会初始化失败，串行处理
+        synchronized (VIDEO_THUMB_LOCK) {
+            byte[] result = buildVideoThumbInner(file);
+            if (result == null) {
+                // 偶发的解码器初始化失败，稍后重试一次
+                try {
+                    Thread.sleep(200L);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+                result = buildVideoThumbInner(file);
+            }
+            return result;
+        }
+    }
+
+    private byte[] buildVideoThumbInner(File file) {
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         try {
             retriever.setDataSource(file.getAbsolutePath());
@@ -411,6 +441,12 @@ public class RemoteImportServer {
                         MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
             }
             if (frame == null) {
+                // 4K H.264 用 MediaMetadataRetriever 取不到帧，退回 MediaCodec 解一帧
+                frame = LauncherActivity.decodeVideoFrameWithCodec(
+                        file.getAbsolutePath(), THUMB_W);
+            }
+            if (frame == null) {
+                Log.w(TAG, "video thumbnail decode failed for " + file.getName());
                 return null;
             }
             int w = THUMB_W;
@@ -484,7 +520,7 @@ public class RemoteImportServer {
             writeJson(out, 413, "{\"ok\":false,\"error\":\"too large\"}");
             return;
         }
-        String saved = video
+        SaveResult saved = video
                 ? host.saveVideo(name, new LimitedInputStream(in, contentLength), contentLength)
                 : host.saveWallpaper(name, new LimitedInputStream(in, contentLength), contentLength);
         if (saved == null) {
@@ -493,9 +529,16 @@ public class RemoteImportServer {
                     : "{\"ok\":false,\"error\":\"not a valid image\"}");
             return;
         }
-        Log.i(TAG, "remote upload saved " + saved);
-        host.onRemoteEvent("已上传 " + saved);
-        writeJson(out, 200, "{\"ok\":true,\"name\":" + jsonString(saved) + "}");
+        if (saved.duplicate) {
+            Log.i(TAG, "remote upload duplicated, ignored: " + saved.name);
+            host.onRemoteEvent("壁纸已存在，已忽略 " + saved.name);
+            writeJson(out, 200, "{\"ok\":true,\"duplicate\":true,\"name\":"
+                    + jsonString(saved.name) + "}");
+            return;
+        }
+        Log.i(TAG, "remote upload saved " + saved.name);
+        host.onRemoteEvent("已上传 " + saved.name);
+        writeJson(out, 200, "{\"ok\":true,\"name\":" + jsonString(saved.name) + "}");
     }
 
     private void serveApply(OutputStream out, String name, boolean video) throws IOException {
@@ -517,6 +560,7 @@ public class RemoteImportServer {
             writeJson(out, 400, "{\"ok\":false,\"error\":\"bad name\"}");
             return;
         }
+        // 当前壁纸允许删除：Host 会先自动切到相邻壁纸（删空时回退内置壁纸）
         boolean ok = video ? host.deleteVideo(name) : host.deleteWallpaper(name);
         if (ok) {
             host.onRemoteEvent("已删除 " + name);
