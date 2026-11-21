@@ -208,11 +208,13 @@ public class LauncherActivity extends Activity {
     /** 4K 静态壁纸：外部图片目录 + 设备端编码缓存目录 */
     private static final String FOUR_K_BG_DIR = "backgrounds_4k";
     private static final String FOUR_K_CACHE_DIR = "4k_cache";
-    /** 内置壁纸：打包在 assets/builtin/ 下，首次启动复制到静态壁纸目录 */
-    private static final String BUILTIN_ASSET_DIR = "builtin";
-    private static final String BUILTIN_ASSET = "yuehai-yunjing.jpg";
+    /** 内置壁纸：打包在 assets/backgrounds/ 下，直接从 APK 读取，不写入壁纸目录 */
+    private static final String BUILTIN_ASSET = "backgrounds/bg_01.jpg";
     /** 内置壁纸在壁纸库中的文件名（管理页显示这个名字，并加「内置」角标） */
     private static final String BUILTIN_WALLPAPER = "月海云境.jpg";
+    /** 内置壁纸项：4K 列表、1080p 兜底列表、最后的兜底渲染共用同一份 */
+    private static final BackgroundItem BUILTIN_ITEM = new BackgroundItem(
+            BUILTIN_WALLPAPER, BUILTIN_ASSET, null, 0L, true);
     private static final int FOUR_K_W = 3840;
     private static final int FOUR_K_H = 2160;
     private static final int FOUR_K_ENCODE_FRAMES = 3;
@@ -1835,7 +1837,7 @@ public class LauncherActivity extends Activity {
         if (!legacy.isFile()) {
             return;
         }
-        long assetBytes = assetLength(BUILTIN_ASSET_DIR + "/" + BUILTIN_ASSET);
+        long assetBytes = assetLength(BUILTIN_ASSET);
         if (assetBytes > 0 && legacy.length() != assetBytes) {
             return;
         }
@@ -1911,8 +1913,7 @@ public class LauncherActivity extends Activity {
     private List<BackgroundItem> scan4KBackgrounds() {
         List<BackgroundItem> items = new ArrayList<>();
         // 内置壁纸不落盘：先入列表，位图直接从 APK assets 读；排序时固定排最后
-        items.add(new BackgroundItem(BUILTIN_WALLPAPER,
-                BUILTIN_ASSET_DIR + "/" + BUILTIN_ASSET, null, 0L, true));
+        items.add(BUILTIN_ITEM);
         File dir = staticWallpaperDir();
         if (!dir.exists()) {
             dir.mkdirs();
@@ -6567,24 +6568,8 @@ public class LauncherActivity extends Activity {
         if (!items.isEmpty()) {
             return items;
         }
-
-        try {
-            String[] names = getAssets().list(BG_DIR);
-            if (names != null) {
-                List<String> assets = new ArrayList<>();
-                for (String name : names) {
-                    if (isImageName(name)) {
-                        assets.add(name);
-                    }
-                }
-                Collections.sort(assets);
-                for (String name : assets) {
-                    items.add(new BackgroundItem(name, name, null, 0L));
-                }
-            }
-        } catch (IOException e) {
-            Log.w(TAG, "list background assets failed", e);
-        }
+        // 设备上没有 1080p 壁纸：直接用内置壁纸兜底，APK 里不再单独打包一份 1080p 副本
+        items.add(BUILTIN_ITEM);
         return items;
     }
 
@@ -6604,8 +6589,7 @@ public class LauncherActivity extends Activity {
         bgBack.setAlpha(0f);
 
         if (backgroundItems.isEmpty()) {
-            bgFront.setImageResource(R.drawable.bg);
-            bgFront.setAlpha(1f);
+            showBuiltinFallback();
             backgroundIndex = -1;
             currentBackgroundName = null;
             wallpaperBlurKey = null;
@@ -6617,8 +6601,7 @@ public class LauncherActivity extends Activity {
         BackgroundItem item = backgroundItems.get(index);
         Bitmap bitmap = loadBackground(item);
         if (bitmap == null) {
-            bgFront.setImageResource(R.drawable.bg);
-            bgFront.setAlpha(1f);
+            showBuiltinFallback();
             backgroundIndex = -1;
             currentBackgroundName = null;
             wallpaperBlurKey = null;
@@ -6631,6 +6614,19 @@ public class LauncherActivity extends Activity {
         wallpaperBlurKey = null;
         preloadNextBackground();
         precomputeWallpaperBlur();
+    }
+
+    /** 列表为空或解码失败时的最后兜底：直接画内置壁纸，连它都读不出来才用深色底 */
+    private void showBuiltinFallback() {
+        Bitmap bitmap = loadBackground(BUILTIN_ITEM);
+        bgFront.setImageDrawable(null);
+        if (bitmap != null) {
+            bgFront.setBackgroundColor(Color.TRANSPARENT);
+            bgFront.setImageBitmap(bitmap);
+        } else {
+            bgFront.setBackgroundColor(0xFF0B1017);
+        }
+        bgFront.setAlpha(1f);
     }
 
     private Bitmap loadBackground(BackgroundItem item) {

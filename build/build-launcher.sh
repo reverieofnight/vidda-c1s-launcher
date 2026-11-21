@@ -15,25 +15,9 @@ AJAR="$TC/platform/android.jar"
 
 rm -rf "$OUT"; mkdir -p "$OUT/gen" "$OUT/obj" "$OUT/dex"
 
-echo "[1/7] 生成背景图 assets"
-BG_SRC="$LOCAL/背景图"   # 壁纸原图属临时资源，放在 local/ 下不入库
+echo "[1/7] 准备 assets"
 ASSETS="$OUT/assets"
-mkdir -p "$ASSETS/backgrounds"
-bg_count=0
-[ -d "$BG_SRC" ] || echo "    提示：$BG_SRC 不存在，跳过内置兜底壁纸"
-for f in "$BG_SRC"/*.jpg "$BG_SRC"/*.jpeg "$BG_SRC"/*.png; do
-  [ -f "$f" ] || continue
-  bg_count=$((bg_count + 1))
-  name=$(printf 'bg_%02d.jpg' "$bg_count")
-  if command -v ffmpeg >/dev/null 2>&1; then
-    ffmpeg -y -loglevel error -i "$f" \
-      -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080" \
-      -frames:v 1 -q:v 3 "$ASSETS/backgrounds/$name"
-  else
-    cp "$f" "$ASSETS/backgrounds/$name"
-  fi
-done
-echo "    背景图 $bg_count 张 → assets/backgrounds"
+mkdir -p "$ASSETS"
 
 # 远程导入页（局域网 HTTP 上传）的静态页面
 mkdir -p "$ASSETS/www"
@@ -41,11 +25,11 @@ if [ -d "$APP/www" ]; then
   cp "$APP/www/"*.html "$ASSETS/www/" 2>/dev/null || true
 fi
 
-# 内置壁纸：随源码入库，首次启动复制到壁纸目录，管理页带「内置」标识
-if [ -d "$APP/assets/builtin" ]; then
-  mkdir -p "$ASSETS/builtin"
-  cp "$APP/assets/builtin/"* "$ASSETS/builtin/" 2>/dev/null || true
-  echo "    内置壁纸 $(ls -1 "$ASSETS/builtin" | wc -l) 张 → assets/builtin"
+# 内置壁纸：随源码入库，安装到 APK 的 assets/backgrounds/bg_01.jpg
+# 4K 列表、1080p 兜底、最后兜底渲染共用这一张，不复制到设备壁纸目录
+if [ -d "$APP/assets" ]; then
+  cp -R "$APP/assets/." "$ASSETS/"
+  echo "    内置壁纸 $(ls -1 "$ASSETS/backgrounds" 2>/dev/null | wc -l) 张 → assets/backgrounds"
 fi
 
 echo "[2/7] aapt2 compile"
