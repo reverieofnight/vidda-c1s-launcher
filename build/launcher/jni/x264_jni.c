@@ -1,3 +1,12 @@
+/*
+ * Dream 桌面 JNI 胶水层（x264 4K 编码）
+ * Copyright (C) 2026 Dream 桌面项目贡献者
+ *
+ * 本程序是自由软件：你可以依据 GNU 通用公共许可证第 2 版
+ * 或（按你的选择）任何更新版本重新发布和/或修改它。
+ *
+ * 本程序按“无担保”发布；详见仓库根目录 LICENSE。
+ */
 #include <jni.h>
 #include <android/log.h>
 #include <stdint.h>
@@ -206,7 +215,7 @@ Java_tv_dsh_launcher_X264Encode4KActivity_encode4K(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_tv_dsh_launcher_LauncherActivity_encodeI4204K(
+Java_cn_rainynight_dream_LauncherActivity_encodeI4204K(
         JNIEnv *env, jclass clazz, jbyteArray yuvArray,
         jint width, jint height, jint frameCount) {
     if (!yuvArray || width <= 0 || height <= 0 || frameCount <= 0) {
