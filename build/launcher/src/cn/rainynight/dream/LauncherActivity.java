@@ -208,6 +208,11 @@ public class LauncherActivity extends Activity {
     /** 4K 静态壁纸：外部图片目录 + 设备端编码缓存目录 */
     private static final String FOUR_K_BG_DIR = "backgrounds_4k";
     private static final String FOUR_K_CACHE_DIR = "4k_cache";
+    /** 内置壁纸：打包在 assets/builtin/ 下，首次启动复制到静态壁纸目录 */
+    private static final String BUILTIN_ASSET_DIR = "builtin";
+    private static final String BUILTIN_ASSET = "yuehai-yunjing.jpg";
+    /** 内置壁纸在壁纸库中的文件名（管理页显示这个名字，并加「内置」角标） */
+    private static final String BUILTIN_WALLPAPER = "月海云境.jpg";
     private static final int FOUR_K_W = 3840;
     private static final int FOUR_K_H = 2160;
     private static final int FOUR_K_ENCODE_FRAMES = 3;
@@ -290,12 +295,20 @@ public class LauncherActivity extends Activity {
         final String filePath;
         /** 外部文件的 lastModified ^ length，用来发现同步后的内容变化 */
         final long stamp;
+        /** 随 APK 分发的内置壁纸：不可删除，管理页单独显示标识 */
+        final boolean builtin;
 
         BackgroundItem(String name, String assetName, String filePath, long stamp) {
+            this(name, assetName, filePath, stamp, false);
+        }
+
+        BackgroundItem(String name, String assetName, String filePath, long stamp,
+                       boolean builtin) {
             this.name = name;
             this.assetName = assetName;
             this.filePath = filePath;
             this.stamp = stamp;
+            this.builtin = builtin;
         }
     }
 
@@ -738,6 +751,7 @@ public class LauncherActivity extends Activity {
 
         // 有写权限时先把旧的私有壁纸迁到公共目录，再扫描
         ensurePublicWallpaperAccess();
+        removeLegacyBuiltinCopy();
         reloadBackgrounds();
         reload4KBackgrounds();
         reloadVideoBackgrounds();
@@ -1811,6 +1825,44 @@ public class LauncherActivity extends Activity {
         }, "4k-cache-cleanup").start();
     }
 
+    /**
+     * 内置壁纸现在直接从 APK assets 读，不占用壁纸目录。
+     * 早期版本曾把它复制到壁纸库，这里把那份遗留副本删掉（大小一致才删，
+     * 避免误删用户自己上传的同名图片）。
+     */
+    private void removeLegacyBuiltinCopy() {
+        File legacy = new File(staticWallpaperDir(), BUILTIN_WALLPAPER);
+        if (!legacy.isFile()) {
+            return;
+        }
+        long assetBytes = assetLength(BUILTIN_ASSET_DIR + "/" + BUILTIN_ASSET);
+        if (assetBytes > 0 && legacy.length() != assetBytes) {
+            return;
+        }
+        if (legacy.delete()) {
+            Log.i(TAG, "legacy builtin wallpaper copy removed");
+        }
+    }
+
+    private long assetLength(String assetPath) {
+        InputStream in = null;
+        try {
+            in = getAssets().open(assetPath);
+            long total = 0;
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                total += read;
+            }
+            return total;
+        } catch (Throwable t) {
+            Log.w(TAG, "read asset length failed: " + assetPath, t);
+            return -1;
+        } finally {
+            closeQuietly(in);
+        }
+    }
+
     private void reload4KBackgrounds() {
         List<BackgroundItem> found = scan4KBackgrounds();
         if (same4KBackgrounds(found)) {
@@ -1858,21 +1910,26 @@ public class LauncherActivity extends Activity {
 
     private List<BackgroundItem> scan4KBackgrounds() {
         List<BackgroundItem> items = new ArrayList<>();
+        // 内置壁纸不落盘：先入列表，位图直接从 APK assets 读；排序时固定排最后
+        items.add(new BackgroundItem(BUILTIN_WALLPAPER,
+                BUILTIN_ASSET_DIR + "/" + BUILTIN_ASSET, null, 0L, true));
         File dir = staticWallpaperDir();
         if (!dir.exists()) {
             dir.mkdirs();
-            return items;
         }
         File[] files = dir.listFiles();
-        if (files == null) {
-            return items;
-        }
-        for (File file : files) {
-            if (!file.isFile() || !isImageName(file.getName())) {
-                continue;
+        if (files != null) {
+            for (File file : files) {
+                if (!file.isFile() || !isImageName(file.getName())) {
+                    continue;
+                }
+                // 旧版本把内置图复制进了目录，现在改为直接读 APK，跳过遗留副本避免重名
+                if (BUILTIN_WALLPAPER.equals(file.getName())) {
+                    continue;
+                }
+                items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
+                        file.lastModified() ^ file.length(), false));
             }
-            items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
-                    file.lastModified() ^ file.length()));
         }
         // 有自定义排序时按 order 排，没列出的按文件名排在后面
         final List<String> order = readBackgroundOrder();
@@ -1885,6 +1942,10 @@ public class LauncherActivity extends Activity {
         Collections.sort(items, new Comparator<BackgroundItem>() {
             @Override
             public int compare(BackgroundItem a, BackgroundItem b) {
+                // 内置壁纸固定排在最后，不受自定义排序影响
+                if (a.builtin != b.builtin) {
+                    return a.builtin ? 1 : -1;
+                }
                 int ra = rank.containsKey(a.name) ? rank.get(a.name) : Integer.MAX_VALUE;
                 int rb = rank.containsKey(b.name) ? rank.get(b.name) : Integer.MAX_VALUE;
                 if (ra != rb) {
@@ -2015,7 +2076,7 @@ public class LauncherActivity extends Activity {
         fourKUiAnimationDone = false;
         fourKVideoReady = false;
         // 与 1080p 壁纸共用同一个解码缓存：同一张图只解码一次
-        Bitmap bitmap = loadFileCached(item.filePath);
+        Bitmap bitmap = loadBackground(item);
         if (bitmap != null) {
             bgFront.setImageBitmap(bitmap);
             bgFront.setAlpha(1f);
@@ -2123,11 +2184,11 @@ public class LauncherActivity extends Activity {
             public void run() {
                 Bitmap source = null;
                 try {
-                    int[] target = targetSizeFor(item.filePath);
+                    int[] target = targetSizeFor(item);
                     if (target == null) {
                         throw new IOException("bad image bounds");
                     }
-                    source = decode4KBitmap(item.filePath, target[0], target[1]);
+                    source = decode4KBitmap(item, target[0], target[1]);
                     if (source == null) {
                         throw new IOException("decode failed");
                     }
@@ -2342,7 +2403,7 @@ public class LauncherActivity extends Activity {
                 int idx = Math.max(fourKIndex, 0);
                 if (idx < fourKItems.size()) {
                     BackgroundItem item = fourKItems.get(idx);
-                    Bitmap bitmap = item.filePath != null ? loadFileCached(item.filePath) : null;
+                    Bitmap bitmap = loadBackground(item);
                     if (bitmap != null) {
                         return bitmap;
                     }
@@ -2392,9 +2453,6 @@ public class LauncherActivity extends Activity {
             return;
         }
         final BackgroundItem item = fourKItems.get((fourKIndex + 1) % fourKItems.size());
-        if (item.filePath == null) {
-            return;
-        }
         final File cache = fourKCacheFile(item);
         if (cache.exists() && cache.length() > 0) {
             return;
@@ -2406,9 +2464,9 @@ public class LauncherActivity extends Activity {
             public void run() {
                 boolean ok = false;
                 try {
-                    int[] target = targetSizeFor(item.filePath);
+                    int[] target = targetSizeFor(item);
                     if (target != null) {
-                        Bitmap source = decode4KBitmap(item.filePath, target[0], target[1]);
+                        Bitmap source = decode4KBitmap(item, target[0], target[1]);
                         if (source != null) {
                             byte[] yuv = bitmapToI420(source, target[0], target[1]);
                             source.recycle();
@@ -2489,11 +2547,8 @@ public class LauncherActivity extends Activity {
     }
 
     /** 按中心裁切后的 16:9 源尺寸编码，最高 4K；低清源不放大 */
-    private static int[] targetSizeFor(String path) {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(path, bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+    private int[] targetSizeFor(BackgroundItem item) {
+        if (readImageBounds(item) == null) {
             return null;
         }
         // 固定 4K 画布：所有壁纸编码尺寸一致，视频 plane 切换时不需要重配缩放/色彩，
@@ -2501,22 +2556,20 @@ public class LauncherActivity extends Activity {
         return new int[]{FOUR_K_W, FOUR_K_H};
     }
 
-    private Bitmap decode4KBitmap(String path, int targetW, int targetH) {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(path, bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+    private Bitmap decode4KBitmap(BackgroundItem item, int targetW, int targetH) {
+        int[] bounds = readImageBounds(item);
+        if (bounds == null) {
             return null;
         }
         int sample = 1;
-        while (bounds.outWidth / (sample * 2) >= targetW
-                && bounds.outHeight / (sample * 2) >= targetH) {
+        while (bounds[0] / (sample * 2) >= targetW
+                && bounds[1] / (sample * 2) >= targetH) {
             sample *= 2;
         }
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inSampleSize = sample;
         options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap src = BitmapFactory.decodeFile(path, options);
+        Bitmap src = decodeImage(item, options);
         if (src == null) {
             return null;
         }
@@ -2539,6 +2592,46 @@ public class LauncherActivity extends Activity {
         canvas.restore();
         src.recycle();
         return dst;
+    }
+
+    /** 读图片尺寸；文件壁纸和 APK 内置壁纸都支持，失败返回 null */
+    private int[] readImageBounds(BackgroundItem item) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        if (item.assetName != null) {
+            InputStream in = null;
+            try {
+                in = getAssets().open(assetPath(item.assetName));
+                BitmapFactory.decodeStream(in, null, bounds);
+            } catch (Throwable t) {
+                Log.w(TAG, "read asset bounds failed: " + item.assetName, t);
+                return null;
+            } finally {
+                closeQuietly(in);
+            }
+        } else {
+            BitmapFactory.decodeFile(item.filePath, bounds);
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return null;
+        }
+        return new int[]{bounds.outWidth, bounds.outHeight};
+    }
+
+    private Bitmap decodeImage(BackgroundItem item, BitmapFactory.Options options) {
+        if (item.assetName != null) {
+            InputStream in = null;
+            try {
+                in = getAssets().open(assetPath(item.assetName));
+                return BitmapFactory.decodeStream(in, null, options);
+            } catch (Throwable t) {
+                Log.w(TAG, "decode asset failed: " + item.assetName, t);
+                return null;
+            } finally {
+                closeQuietly(in);
+            }
+        }
+        return BitmapFactory.decodeFile(item.filePath, options);
     }
 
     private static byte[] bitmapToI420(Bitmap bitmap, int width, int height) {
@@ -4337,7 +4430,8 @@ public class LauncherActivity extends Activity {
                     for (BackgroundItem item : fourKItems) {
                         if (item.name.equals(name)) {
                             LauncherActivity.this.deleteWallpaper(item);
-                            return !new File(item.filePath).exists();
+                            // 内置壁纸没有实体文件，删除会被拒绝，这里直接返回 false
+                            return item.filePath == null || !new File(item.filePath).exists();
                         }
                     }
                     return false;
@@ -5075,6 +5169,23 @@ public class LauncherActivity extends Activity {
                 tile.addView(play, playLp);
             }
 
+            // 内置壁纸单独标识：左上角灰色角标，与右上角蓝色「当前」区分开
+            if (item.builtin) {
+                TextView builtinBadge = new TextView(LauncherActivity.this);
+                builtinBadge.setText("内置");
+                builtinBadge.setTextColor(Color.WHITE);
+                builtinBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                builtinBadge.setBackgroundColor(0xCC37474F);
+                builtinBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+                FrameLayout.LayoutParams builtinLp = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.TOP | Gravity.START);
+                builtinLp.topMargin = dp(6);
+                builtinLp.leftMargin = dp(6);
+                tile.addView(builtinBadge, builtinLp);
+            }
+
             if (item.name.equals(activeManagerCurrentName())) {
                 TextView badge = new TextView(LauncherActivity.this);
                 badge.setText("当前");
@@ -5230,31 +5341,25 @@ public class LauncherActivity extends Activity {
     }
 
     private Bitmap decodeThumbnail(BackgroundItem item, int targetW, int targetH) {
-        String path = item.filePath;
-        if (path == null) {
-            return null;
-        }
         if (isVideoName(item.name)) {
-            return decodeVideoThumbnail(path, targetW);
+            return item.filePath == null ? null : decodeVideoThumbnail(item.filePath, targetW);
         }
         try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(path, bounds);
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            int[] bounds = readImageBounds(item);
+            if (bounds == null) {
                 return null;
             }
             int sample = 1;
-            while (bounds.outWidth / (sample * 2) >= targetW
-                    && bounds.outHeight / (sample * 2) >= targetH) {
+            while (bounds[0] / (sample * 2) >= targetW
+                    && bounds[1] / (sample * 2) >= targetH) {
                 sample *= 2;
             }
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = sample;
             options.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeFile(path, options);
+            return decodeImage(item, options);
         } catch (Throwable t) {
-            Log.w(TAG, "decode thumbnail failed: " + path, t);
+            Log.w(TAG, "decode thumbnail failed: " + item.name, t);
             return null;
         }
     }
@@ -5570,6 +5675,10 @@ public class LauncherActivity extends Activity {
     }
 
     private void confirmDeleteWallpaper(final BackgroundItem item) {
+        if (item.builtin) {
+            Toast.makeText(this, "内置壁纸不能删除", Toast.LENGTH_SHORT).show();
+            return;
+        }
         boolean video = isVideoName(item.name);
         new AlertDialog.Builder(this)
                 .setTitle(video ? "删除视频壁纸" : "删除壁纸")
@@ -5586,6 +5695,10 @@ public class LauncherActivity extends Activity {
     }
 
     private void deleteWallpaper(BackgroundItem item) {
+        if (item.builtin) {
+            Toast.makeText(this, "内置壁纸不能删除", Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (isVideoName(item.name)) {
             deleteVideoWallpaper(item);
             return;
@@ -6527,8 +6640,13 @@ public class LauncherActivity extends Activity {
         return loadFileCached(item.filePath);
     }
 
+    /** assets 内的路径：带 `/` 的按原样用（内置壁纸在 builtin/ 下），否则当作 backgrounds/ */
+    private static String assetPath(String name) {
+        return name.indexOf('/') >= 0 ? name : BG_DIR + "/" + name;
+    }
+
     private Bitmap loadAsset(String name) {
-        String path = BG_DIR + "/" + name;
+        String path = assetPath(name);
         InputStream input = null;
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();

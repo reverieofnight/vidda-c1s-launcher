@@ -41,6 +41,13 @@ if [ -d "$APP/www" ]; then
   cp "$APP/www/"*.html "$ASSETS/www/" 2>/dev/null || true
 fi
 
+# 内置壁纸：随源码入库，首次启动复制到壁纸目录，管理页带「内置」标识
+if [ -d "$APP/assets/builtin" ]; then
+  mkdir -p "$ASSETS/builtin"
+  cp "$APP/assets/builtin/"* "$ASSETS/builtin/" 2>/dev/null || true
+  echo "    内置壁纸 $(ls -1 "$ASSETS/builtin" | wc -l) 张 → assets/builtin"
+fi
+
 echo "[2/7] aapt2 compile"
 "$BT/aapt2" compile --dir "$APP/res" -o "$OUT/res.zip"
 
