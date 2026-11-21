@@ -30,7 +30,7 @@ echo "[3/7] aapt2 link"
   --min-sdk-version 28 --target-sdk-version 28
 
 echo "[4/7] javac"
-"$JDK/bin/javac" -source 8 -target 8 -nowarn \
+"$JDK/bin/javac" -source 8 -target 8 -encoding UTF-8 -nowarn \
   -bootclasspath "$AJAR" -classpath "$AJAR" \
   -d "$OUT/obj" \
   "$OUT/gen/tv/dsh/settingsentry/R.java" \

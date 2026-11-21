@@ -62,7 +62,7 @@ if [ -f "$APP/libs/arm64-v8a/libx264jni.so" ]; then
 fi
 
 echo "[4/7] javac"
-"$JDK/bin/javac" -source 8 -target 8 -nowarn \
+"$JDK/bin/javac" -source 8 -target 8 -encoding UTF-8 -nowarn \
   -bootclasspath "$AJAR" -classpath "$AJAR" \
   -d "$OUT/obj" \
   "$OUT/gen/cn/rainynight/dream/R.java" \
