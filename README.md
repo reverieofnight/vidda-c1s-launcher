@@ -30,8 +30,9 @@
 build/
   build-launcher.sh       桌面 APK 构建脚本（aapt2 → javac → d8 → zipalign → apksigner）
   build.sh                设置入口 APK（settingsentry）构建脚本
+  native/                 x264 / JNI 原生库构建脚本（可完整复现 libx264jni.so）
   launcher/               桌面源码：src/ res/ jni/ AndroidManifest.xml
-    libs/arm64-v8a/libx264jni.so   预编译 x264 JNI（见 NOTICE.md）
+    libs/arm64-v8a/libx264jni.so   预编译 x264 JNI（构建方式见 build/native/README.md）
     src/cn/rainynight/dream/QrCode.java   零依赖二维码编码器（远程导入页用）
     www/upload.html  远程导入的上传页（构建时打进 assets/www/）
   app/                    settingsentry 源码
@@ -96,6 +97,14 @@ curl -s http://<电视IP>:8080/api/list          # 远程导入服务只在「�
 
 设备 `debuggable=false`，`run-as` 和直接读 `/data/data/cn.rainynight.dream` 都不可用，排查走 logcat（tag `DSH_LAUNCHER`）。
 
-## 关于许可
+## 许可证
 
-本仓库目前**未声明开源许可**，且 `libx264jni.so` 链接了 **GPL-2.0-or-later** 的 x264；此外 H.264 标准还涉及第三方专利池（与 x264 的版权许可无关，x264 不提供专利许可）。在对外发布/分发前请先阅读 **[NOTICE.md](NOTICE.md)** 并确定整套许可方案。
+本项目以 **GPL-2.0-or-later** 发布，完整许可证文本见 **[LICENSE](LICENSE)**。
+
+之所以选择 GPLv2+，是因为 4K 静态壁纸的 `libx264jni.so` 静态链接了 GPL 的 x264，整个桌面作为结合作品一并开放。
+
+- 完整对应源码：本仓库全部内容，包括 `build/native/` 下的原生构建脚本；
+- x264 的版本与获取方式：**[build/native/README.md](build/native/README.md)**；
+- 第三方组件、H.264 专利说明与分发清单：**[NOTICE.md](NOTICE.md)**。
+
+自用不受限制；对外分发 APK 时，请随附源码、LICENSE 与 NOTICE，并保留接收者修改、再分发的权利。

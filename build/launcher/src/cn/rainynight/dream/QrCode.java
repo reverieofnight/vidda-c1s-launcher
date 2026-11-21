@@ -1,3 +1,12 @@
+/*
+ * Dream 桌面（cn.rainynight.dream）
+ * Copyright (C) 2026 Dream 桌面项目贡献者
+ *
+ * 本程序是自由软件：你可以依据 GNU 通用公共许可证第 2 版
+ * 或（按你的选择）任何更新版本重新发布和/或修改它。
+ *
+ * 本程序按“无担保”发布；详见仓库根目录 LICENSE。
+ */
 package cn.rainynight.dream;
 
 import java.io.UnsupportedEncodingException;
