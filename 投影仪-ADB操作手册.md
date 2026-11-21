@@ -101,36 +101,23 @@ Security exception: Permission Denial: ... not exported from uid 1000
 
 ## 五、源码与构建
 
-```
-build/
-├── app/
-│   ├── AndroidManifest.xml
-│   ├── res/values/strings.xml        ← 应用名称
-│   ├── res/drawable/icon.png         ← 图标（系统原生齿轮）
-│   ├── res/drawable/banner.png       ← TV banner（深色底 + 齿轮）
-│   └── src/tv/dsh/settingsentry/MainActivity.java
-└── build.sh                           ← 一键构建
+源码已拆分到独立仓库：<https://github.com/reverieofnight/vidda-settings-entry>（GPL-2.0-or-later）。
 
-local/                                 ← 本地私有目录（整目录不入库）
-├── keystore.jks                       ← 签名密钥（务必保留，否则无法覆盖升级）
-├── toolchain/                         ← （可选）JDK + build-tools + android.jar；默认在 ~/dev-tools
-└── settings-out/settings-entry.apk     ← 成品
+```
+vidda-settings-entry/
+├── build.sh                          ← 一键构建（aapt2 → javac → d8 → zipalign → apksigner）
+├── app/AndroidManifest.xml
+├── app/res/drawable/icon.png         ← 图标（系统原生齿轮）
+├── app/res/drawable/banner.png       ← TV banner（深色底 + 齿轮）
+├── app/res/values/strings.xml        ← 应用名称
+└── app/src/tv/dsh/settingsentry/MainActivity.java
 ```
 
-构建命令：
-
-```bash
-cd build
-export LANG=C.UTF-8 LC_ALL=C.UTF-8
-export JAVA_HOME="$HOME/dev-tools/toolchain/jdk"; export PATH="$JAVA_HOME/bin:$PATH"
-sh build.sh
-```
+构建命令、工具链要求与签名说明见该仓库 README。改名字只需改 `res/values/strings.xml`；换图标只需替换 `res/drawable/icon.png`。
 
 **踩过的坑（重要）**：本机 `LANG` 未设置（POSIX 编码），JVM 无法打开含中文的
 `java.home` 路径，会报 `Error loading java.security file`。任何 Java 工具都必须先
 `export LANG=C.UTF-8`。
-
-改名字只需改 `res/values/strings.xml`；换图标只需替换 `res/drawable/icon.png`。
 
 ---
 

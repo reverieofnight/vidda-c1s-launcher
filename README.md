@@ -29,30 +29,27 @@
 ```
 build/
   build-launcher.sh       桌面 APK 构建脚本（aapt2 → javac → d8 → zipalign → apksigner）
-  build.sh                设置入口 APK（settingsentry）构建脚本
   native/                 x264 / JNI 原生库构建脚本（可完整复现 libx264jni.so）
   launcher/               桌面源码：src/ res/ jni/ AndroidManifest.xml
     libs/arm64-v8a/libx264jni.so   预编译 x264 JNI（构建方式见 build/native/README.md）
     src/cn/rainynight/dream/QrCode.java   零依赖二维码编码器（远程导入页用）
     www/upload.html  远程导入的上传页（构建时打进 assets/www/）
-  app/                    settingsentry 源码
-  icons/ext/              设置入口图标素材
 tools/
   adb                     adb 包装器（HOME 重定向到 local/adbhome）
   sync-backgrounds*.sh    批量同步壁纸到设备
 local/                    本地私有目录，整目录不入库（详见 local/README.md）
   toolchain/              （可选）JDK + build-tools + android.jar；默认在 ~/dev-tools/toolchain
   launcher-out/           桌面 APK 构建产物
-  settings-out/           设置入口 APK 构建产物
   keystore.jks            签名密钥
   platform-tools/         （可选）adb 客户端；默认在 ~/dev-tools/platform-tools
   adbhome/                adb 的 HOME（含已授权 adbkey）
   screens/                过程截图（106 张）
-  icons/settings.apk      早期图标素材 APK
   背景图/                8 张壁纸原图（构建时裁成 1920×1080 assets）
   背景图4k/              4K 测试图
   桌面演示.mp4 / 8K狼标准黑底.jpg / Thumbs.db
 ```
+
+「开发者选项」入口 APK（`tv.dsh.settingsentry`）已拆分到独立仓库：<https://github.com/reverieofnight/vidda-settings-entry>。
 
 壁纸原图属于**临时资源**（大文件、授权待确认），不进仓库，只放 `local/背景图/`。
 
