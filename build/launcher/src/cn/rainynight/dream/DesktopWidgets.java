@@ -337,7 +337,7 @@ final class DesktopWidgets {
             }
         }
         dock.removeAllViews();
-        List<LauncherActivity.AppEntry> source = activity.buildDockSource();
+        List<AppEntry> source = activity.buildDockSource();
         int count = Math.min(source.size(), activity.iconsPerRow());
         if (count == 0) {
             TextView empty = new TextView(activity);

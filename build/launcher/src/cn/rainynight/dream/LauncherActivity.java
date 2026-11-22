@@ -162,8 +162,8 @@ public class LauncherActivity extends Activity {
     private static final String KEY_REMOTE_KEEP = "remote_keep_running";
     private static final int[] SLIDESHOW_STEPS = {10, 30, 60, 300, 600, 1800};
     /** UI 壁纸相对视频 plane 的 1px 对齐微调 */
-    private static final float WALLPAPER_NUDGE_X = 1f;
-    private static final float WALLPAPER_NUDGE_Y = 1f;
+    static final float WALLPAPER_NUDGE_X = 1f;
+    static final float WALLPAPER_NUDGE_Y = 1f;
 
     /** 已弹过一次写权限申请，避免每次启动都打扰 */
     private static final String KEY_WRITE_ASKED = "write_permission_asked";
@@ -200,11 +200,11 @@ public class LauncherActivity extends Activity {
     /** 视频层延迟启动：UI 立即换图，用户停止操作这么久后才加载视频，避免频繁重配闪屏 */
     static final long FOUR_K_SWITCH_DEBOUNCE_MS = 2000L;
     /** UI 和 4K 视频使用同一个 overscan，避免一层放大一层不放大 */
-    private static final float WALLPAPER_OVERSCAN = 1.002f;
+    static final float WALLPAPER_OVERSCAN = 1.002f;
 
     /** 打开/关闭动画时长（抽屉与桌面组件保持一致） */
-    private static final long OPEN_MS = 400;
-    private static final long CLOSE_MS = 320;
+    static final long OPEN_MS = 400;
+    static final long CLOSE_MS = 320;
     /** 菜单按钮 60×60dp；横条高度 = 按钮高度 + 上下内边距 */
     static final int MENU_ITEM_WIDTH_DP = 60;
     static final int MENU_ITEM_HEIGHT_DP = 60;
@@ -239,45 +239,23 @@ public class LauncherActivity extends Activity {
 
     static native byte[] encodeI4204K(byte[] yuv, int width, int height, int frames);
 
-    static final class AppEntry {
-        final String label;
-        final ComponentName component;
-        final Drawable icon;
-        final String key;
-        /** 首次安装时间：与最后打开时间一起决定底部栏的先后 */
-        final long firstInstallTime;
-
-        AppEntry(String label, ComponentName component, Drawable icon, long firstInstallTime) {
-            this.label = label;
-            this.component = component;
-            this.icon = icon;
-            this.key = component.flattenToString();
-            this.firstInstallTime = firstInstallTime;
-        }
-    }
-
-    private final List<AppEntry> allApps = new ArrayList<>();
-    private final Map<String, AppEntry> byKey = new HashMap<>();
+    /** 应用列表仓储：扫描结果供抽屉与 Dock 共用 */
+    private AppRepository appRepository;
     /** 壁纸文件仓储：目录解析 / 扫描 / 复制入库 / 迁移 */
     private WallpaperStore store;
     /** 组件 → 最后一次打开时间；和新安装时间合并后决定底部栏顺序 */
     private final Map<String, Long> openTimes = new HashMap<>();
 
+    /** 桌面大层：壁纸两层 / 视频层 / 过渡层 / 遮罩 */
+    private DesktopLayer desktopLayer;
     private FrameLayout desktopModule;
     private FrameLayout homeLayer;
-    private FrameLayout drawer;
-    private GridView grid;
-    private ImageView drawerFrostView;
+    /** 应用抽屉 */
+    private AppDrawer drawer;
     private Bitmap wallpaperBlurBitmap;
     private String wallpaperBlurKey;
     /** 桌面控件层：时钟 / 天气 / Dock / 壁纸左右键 / 提示 */
     private DesktopWidgets widgets;
-    private ImageView bgFront;
-    private ImageView bgBack;
-    private VideoView wallpaperVideo;
-    private FrameLayout wallpaperTransitionLayer;
-    private ImageView transitionOld;
-    private ImageView transitionNew;
     private boolean reveal4KVideo = true;
     private Bitmap currentUiSnapshot;
     private Runnable pendingRevealRunnable;
@@ -305,7 +283,6 @@ public class LauncherActivity extends Activity {
     private boolean startupAppScanDone;
     /** 后台重扫应用列表是否进行中（避免重复起线程） */
     private boolean appScanRunning;
-    private int drawerSelectedPosition = 0;
     /** 1080p 背景轮播控制器 */
     private SlideshowController slideshow;
     /** 顶部菜单条 */
@@ -338,7 +315,7 @@ public class LauncherActivity extends Activity {
     /** 取消选中时承接焦点的透明空控件 */
     private View focusSink;
     private boolean firstResume = true;
-    private int screenHeight;
+    int screenHeight;
 
     int dp(float v) {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
@@ -367,12 +344,12 @@ public class LauncherActivity extends Activity {
     }
 
     /** 图标外层遮罩边长（dp）：比图标大一圈，保持正方形 */
-    private int iconMaskDp() {
+    int iconMaskDp() {
         return iconSizeDp() + 12;
     }
 
     /** 应用名称字号随图标尺寸缩放：小 10 / 中 11 / 大 12sp */
-    private float iconLabelSp() {
+    float iconLabelSp() {
         if (ICON_SIZE_SMALL.equals(iconSizePreset)) {
             return 10f;
         }
@@ -389,6 +366,7 @@ public class LauncherActivity extends Activity {
         fourKStatic = new FourKStaticPlayer(this);
         videoPlayer = new VideoWallpaperPlayer(this);
         slideshow = new SlideshowController(this);
+        appRepository = new AppRepository(this);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.BLACK));
         screenHeight = getResources().getDisplayMetrics().heightPixels;
         reveal4KVideo = getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -401,31 +379,13 @@ public class LauncherActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
-        // 桌面是一个整体模块：壁纸 + 遮罩 + 时钟/天气/底栏 + 抽屉都会一起移动
-        desktopModule = new FrameLayout(this);
+        // ---- 桌面大层：壁纸两层 + 视频层 + 过渡层 + 遮罩 ----
+        desktopLayer = new DesktopLayer(this);
+        desktopModule = desktopLayer.getModule();
         root.addView(desktopModule, matchParent());
 
-        // 两张背景图交替淡化：bgFront 是当前图，bgBack 是下一张
-        bgFront = new ImageView(this);
-        bgFront.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        desktopModule.addView(bgFront, matchParent());
-
-        bgBack = new ImageView(this);
-        bgBack.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        bgBack.setAlpha(0f);
-        desktopModule.addView(bgBack, matchParent());
-        bgFront.setTranslationX(WALLPAPER_NUDGE_X);
-        bgFront.setTranslationY(WALLPAPER_NUDGE_Y);
-        bgFront.setScaleX(WALLPAPER_OVERSCAN);
-        bgFront.setScaleY(WALLPAPER_OVERSCAN);
-        bgBack.setTranslationX(WALLPAPER_NUDGE_X);
-        bgBack.setTranslationY(WALLPAPER_NUDGE_Y);
-        bgBack.setScaleX(WALLPAPER_OVERSCAN);
-        bgBack.setScaleY(WALLPAPER_OVERSCAN);
-
-        // 4K 视频壁纸测试层：普通 SurfaceView 会被压到 1080p，VideoView 走硬件视频 plane
-        wallpaperVideo = new VideoView(this);
-        wallpaperVideo.getHolder().addCallback(new SurfaceHolder.Callback() {
+        // surface 生命周期仍由 Activity 转发给动态视频与 4K 播放器
+        desktopLayer.video().getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
                 Log.i(TAG, "video surface created");
@@ -447,28 +407,6 @@ public class LauncherActivity extends Activity {
                 fourKStatic.onSurfaceDestroyed();
             }
         });
-        wallpaperVideo.setFocusable(false);
-        wallpaperVideo.setVisibility(View.GONE);
-        desktopModule.addView(wallpaperVideo, matchParent());
-
-        // 4K 视频切换时的 1080p 快照交叉淡化层（位于 VideoView 之上、scrim 之下）
-        wallpaperTransitionLayer = new FrameLayout(this);
-        wallpaperTransitionLayer.setBackgroundColor(Color.TRANSPARENT);
-        wallpaperTransitionLayer.setVisibility(View.GONE);
-
-        transitionOld = new ImageView(this);
-        transitionOld.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        wallpaperTransitionLayer.addView(transitionOld, matchParent());
-
-        transitionNew = new ImageView(this);
-        transitionNew.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        transitionNew.setAlpha(0f);
-        wallpaperTransitionLayer.addView(transitionNew, matchParent());
-        wallpaperTransitionLayer.setTranslationX(WALLPAPER_NUDGE_X);
-        wallpaperTransitionLayer.setTranslationY(WALLPAPER_NUDGE_Y);
-        wallpaperTransitionLayer.setScaleX(WALLPAPER_OVERSCAN);
-        wallpaperTransitionLayer.setScaleY(WALLPAPER_OVERSCAN);
-        desktopModule.addView(wallpaperTransitionLayer, matchParent());
 
         // 有写权限时先把旧的私有壁纸迁到公共目录，再扫描
         ensurePublicWallpaperAccess();
@@ -478,86 +416,14 @@ public class LauncherActivity extends Activity {
         reloadVideoBackgrounds();
         cleanup4KCacheAsync();
 
-        View scrim = new View(this);
-        scrim.setBackgroundColor(0x33000000);
-        desktopModule.addView(scrim, matchParent());
-
         // ---- 桌面控件层：时钟 / 天气 / 底部 Dock / 壁纸左右键 / 提示 ----
         widgets = new DesktopWidgets(this);
         homeLayer = widgets.getLayer();
-        desktopModule.addView(homeLayer, matchParent());
+        desktopLayer.addLayer(homeLayer);
 
-        // ---- 抽屉层：应用网格 ----
-        drawer = new FrameLayout(this);
-        drawer.setBackgroundColor(Color.TRANSPARENT);
-        drawer.setVisibility(View.GONE);
-
-        drawerFrostView = new ImageView(this);
-        drawerFrostView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        drawer.addView(drawerFrostView, matchParent());
-
-        View drawerTint = new View(this);
-        drawerTint.setBackgroundColor(0x8C0B1017);
-        drawer.addView(drawerTint, matchParent());
-
-        grid = new GridView(this);
-        grid.setNumColumns(iconsPerRow());
-        grid.setHorizontalSpacing(dp(8));
-        grid.setVerticalSpacing(dp(16));
-        grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
-        grid.setPadding(dp(26), dp(26), dp(26), dp(26));
-        grid.setClipToPadding(false);
-        grid.setSelector(android.R.color.transparent);
-        grid.setAdapter(new AppAdapter());
-        grid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-            @Override
-            public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                launch(allApps.get(position));
-            }
-        });
-        grid.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                drawerSelectedPosition = position;
-                for (int i = 0; i < parent.getChildCount(); i++) {
-                    View child = parent.getChildAt(i);
-                    if (child instanceof ViewGroup) {
-                        View mask = child.findViewById(0x2003);
-                        if (mask != null) {
-                            mask.setBackgroundResource(child == view
-                                    ? R.drawable.dock_focus : R.drawable.tile_bg);
-                        }
-                    }
-                }
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-                for (int i = 0; i < parent.getChildCount(); i++) {
-                    View child = parent.getChildAt(i);
-                    if (child instanceof ViewGroup) {
-                        View mask = child.findViewById(0x2003);
-                        if (mask != null) {
-                            mask.setBackgroundResource(R.drawable.tile_bg);
-                        }
-                    }
-                }
-            }
-        });
-        grid.setOnKeyListener(new View.OnKeyListener() {
-            @Override
-            public boolean onKey(View v, int keyCode, KeyEvent event) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN
-                        && keyCode == KeyEvent.KEYCODE_DPAD_UP
-                        && grid.getSelectedItemPosition() < iconsPerRow()) {
-                    closeDrawer();
-                    return true;
-                }
-                return false;
-            }
-        });
-        drawer.addView(grid, matchParent());
-        desktopModule.addView(drawer, matchParent());
+        // ---- 应用抽屉：毛玻璃底层 + 应用网格 ----
+        drawer = new AppDrawer(this, appRepository);
+        desktopLayer.addLayer(drawer.getView());
 
         // ---- 顶部菜单模块：横条 + 底部浅色描边，整体从屏幕外挤入 ----
         menu = new DesktopMenu(this);
@@ -819,8 +685,8 @@ public class LauncherActivity extends Activity {
         }
         videoWallpaperMode = false;
         stopVideoWallpaper();
-        bgFront.setVisibility(View.VISIBLE);
-        bgBack.setVisibility(View.VISIBLE);
+        bgFrontView().setVisibility(View.VISIBLE);
+        bgBackView().setVisibility(View.VISIBLE);
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
         // 播放视频时 4K 静态模式被关掉了；这里必须重新进入图片模式，
@@ -1023,13 +889,13 @@ public class LauncherActivity extends Activity {
     /** 把两层 UI 壁纸都撤掉，露出桌面根容器的黑色背景 */
     void clearWallpaperToBlack() {
         slideshow.stopTimer();
-        if (bgFront != null) {
-            bgFront.setImageDrawable(null);
-            bgFront.setVisibility(View.INVISIBLE);
+        if (bgFrontView() != null) {
+            bgFrontView().setImageDrawable(null);
+            bgFrontView().setVisibility(View.INVISIBLE);
         }
-        if (bgBack != null) {
-            bgBack.setImageDrawable(null);
-            bgBack.setVisibility(View.INVISIBLE);
+        if (bgBackView() != null) {
+            bgBackView().setImageDrawable(null);
+            bgBackView().setVisibility(View.INVISIBLE);
         }
     }
 
@@ -1046,16 +912,16 @@ public class LauncherActivity extends Activity {
         if (videoWallpaperMode) {
             return;
         }
-        if (wallpaperVideo == null) {
+        if (wallpaperVideoView() == null) {
             return;
         }
         if (!fourKStaticEnabled()) {
             fourKStatic.setMode(false);
             fourKStatic.reset();
             fourKStatic.stop();
-            if (bgFront != null) {
-                bgFront.setVisibility(View.VISIBLE);
-                bgBack.setVisibility(View.VISIBLE);
+            if (bgFrontView() != null) {
+                bgFrontView().setVisibility(View.VISIBLE);
+                bgBackView().setVisibility(View.VISIBLE);
             }
             resetBgTimer();
             preloadNextBackground();
@@ -1103,20 +969,20 @@ public class LauncherActivity extends Activity {
         // 与 1080p 壁纸共用同一个解码缓存：同一张图只解码一次
         Bitmap bitmap = loadBackground(item);
         if (bitmap != null) {
-            bgFront.setImageBitmap(bitmap);
-            bgFront.setAlpha(1f);
-            bgBack.setAlpha(0f);
+            bgFrontView().setImageBitmap(bitmap);
+            bgFrontView().setAlpha(1f);
+            bgBackView().setAlpha(0f);
             slideshow.adoptCurrent(fourKIndex, item.name);
             wallpaperBlurKey = null;
 
-            transitionOld.animate().cancel();
-            transitionNew.animate().cancel();
-            transitionOld.setImageDrawable(null);
-            transitionOld.setAlpha(0f);
-            transitionNew.setImageBitmap(bitmap);
-            transitionNew.setAlpha(1f);
-            wallpaperTransitionLayer.setAlpha(1f);
-            wallpaperTransitionLayer.setVisibility(View.VISIBLE);
+            transitionOldView().animate().cancel();
+            transitionNewView().animate().cancel();
+            transitionOldView().setImageDrawable(null);
+            transitionOldView().setAlpha(0f);
+            transitionNewView().setImageBitmap(bitmap);
+            transitionNewView().setAlpha(1f);
+            transitionLayerView().setAlpha(1f);
+            transitionLayerView().setVisibility(View.VISIBLE);
         }
         fourKStatic.markUiAnimationDone(true);
         maybeHide4KUiCover();
@@ -1193,37 +1059,37 @@ public class LauncherActivity extends Activity {
 
     /** 视频层在准备期间是空的黑 surface，用当前静态壁纸铺一层封面挡住 */
     void showVideoCover() {
-        if (wallpaperTransitionLayer == null || transitionNew == null) {
+        if (transitionLayerView() == null || transitionNewView() == null) {
             return;
         }
-        if (wallpaperTransitionLayer.getVisibility() == View.VISIBLE
-                && transitionNew.getDrawable() != null) {
+        if (transitionLayerView().getVisibility() == View.VISIBLE
+                && transitionNewView().getDrawable() != null) {
             return;
         }
         Bitmap cover = currentImageCoverBitmap();
         if (cover == null) {
             return;
         }
-        if (transitionOld != null) {
-            transitionOld.setImageDrawable(null);
+        if (transitionOldView() != null) {
+            transitionOldView().setImageDrawable(null);
         }
-        transitionNew.setImageBitmap(cover);
-        transitionNew.setAlpha(1f);
-        wallpaperTransitionLayer.setAlpha(1f);
-        wallpaperTransitionLayer.setVisibility(View.VISIBLE);
+        transitionNewView().setImageBitmap(cover);
+        transitionNewView().setAlpha(1f);
+        transitionLayerView().setAlpha(1f);
+        transitionLayerView().setVisibility(View.VISIBLE);
         Log.i(TAG, "video cover shown");
     }
 
     void hideVideoCover() {
-        if (wallpaperTransitionLayer == null || transitionNew == null) {
+        if (transitionLayerView() == null || transitionNewView() == null) {
             return;
         }
-        if (transitionNew.getDrawable() == null) {
+        if (transitionNewView().getDrawable() == null) {
             return;
         }
-        wallpaperTransitionLayer.setVisibility(View.GONE);
-        transitionOld.setImageDrawable(null);
-        transitionNew.setImageDrawable(null);
+        transitionLayerView().setVisibility(View.GONE);
+        transitionOldView().setImageDrawable(null);
+        transitionNewView().setImageDrawable(null);
         Log.i(TAG, "video cover hidden");
     }
 
@@ -1277,19 +1143,19 @@ public class LauncherActivity extends Activity {
 
     /** 无动画硬切：直接移除 UI 覆盖层，露出已经稳定显示的 4K 视频帧 */
     private void hide4KUiCover() {
-        if (wallpaperTransitionLayer == null
-                || wallpaperTransitionLayer.getVisibility() != View.VISIBLE) {
+        if (transitionLayerView() == null
+                || transitionLayerView().getVisibility() != View.VISIBLE) {
             return;
         }
-        if (wallpaperTransitionLayer != null) {
-            wallpaperTransitionLayer.animate().cancel();
-            wallpaperTransitionLayer.setVisibility(View.GONE);
-            wallpaperTransitionLayer.setAlpha(1f);
-            transitionOld.setImageDrawable(null);
-            transitionNew.setImageDrawable(null);
+        if (transitionLayerView() != null) {
+            transitionLayerView().animate().cancel();
+            transitionLayerView().setVisibility(View.GONE);
+            transitionLayerView().setAlpha(1f);
+            transitionOldView().setImageDrawable(null);
+            transitionNewView().setImageDrawable(null);
         }
-        if (wallpaperVideo != null) {
-            wallpaperVideo.setVisibility(View.VISIBLE);
+        if (wallpaperVideoView() != null) {
+            wallpaperVideoView().setVisibility(View.VISIBLE);
         }
         Log.i(TAG, "4K UI cover hidden (hard cut)");
         revealStartupFromBlack();
@@ -1881,11 +1747,9 @@ public class LauncherActivity extends Activity {
             // 旧尺寸的图标位图必须清掉，否则抽屉里仍是旧大小
             gridIconCache.clear();
             dockShadowCache.clear();
-            drawerSelectedPosition = 0;
-            if (grid != null) {
-                grid.setNumColumns(iconsPerRow());
-                grid.setAdapter(new AppAdapter());
-            }
+            drawer.resetSelection();
+            drawer.setColumns(iconsPerRow());
+            drawer.resetAdapter();
             refreshDock();
             Log.i(TAG, "icon size changed: " + preset + " (" + iconSizeDp()
                     + "dp, " + iconsPerRow() + " per row)");
@@ -2042,38 +1906,22 @@ public class LauncherActivity extends Activity {
 
     /** 菜单打开/关闭时把桌面整体下压或复位；4K 视频层露出时菜单悬浮、桌面不动 */
     void setDesktopOffsetForMenu(boolean opening) {
-        if (desktopModule == null) {
-            return;
-        }
-        desktopModule.animate().cancel();
-        if (opening && !shouldFloatMenu()) {
-            desktopModule.animate().translationY(dp(MENU_HEIGHT_DP))
-                    .setDuration(MENU_ANIM_MS).setInterpolator(OPEN_EASE).start();
-        } else if (opening) {
-            desktopModule.setTranslationY(0f);
-        } else {
-            desktopModule.animate().translationY(0f)
-                    .setDuration(MENU_ANIM_MS).setInterpolator(CLOSE_EASE).start();
+        if (desktopLayer != null) {
+            desktopLayer.animateForMenu(opening, shouldFloatMenu());
         }
     }
 
     void resetDesktopOffsetForMenu() {
-        if (desktopModule != null) {
-            desktopModule.animate().cancel();
-            desktopModule.setTranslationY(0f);
+        if (desktopLayer != null) {
+            desktopLayer.resetOffset();
         }
     }
 
     /** 菜单开着时 4K 模式切换：重新计算桌面是否需要下压 */
     private void relayoutDesktopForMenu() {
-        if (!isMenuOpen() || desktopModule == null) {
-            return;
+        if (isMenuOpen() && desktopLayer != null) {
+            desktopLayer.relayoutForMenu(shouldFloatMenu());
         }
-        desktopModule.animate().cancel();
-        float target = shouldFloatMenu() ? 0f : dp(MENU_HEIGHT_DP);
-        desktopModule.animate().translationY(target)
-                .setDuration(MENU_ANIM_MS)
-                .setInterpolator(target == 0f ? CLOSE_EASE : OPEN_EASE).start();
     }
 
     // ---------- 4K 静态播放器（FourKStaticPlayer）宿主 ----------
@@ -2087,27 +1935,27 @@ public class LauncherActivity extends Activity {
     }
 
     VideoView wallpaperVideoView() {
-        return wallpaperVideo;
+        return desktopLayer.video();
     }
 
     ImageView bgFrontView() {
-        return bgFront;
+        return desktopLayer.bgFront();
     }
 
     ImageView bgBackView() {
-        return bgBack;
+        return desktopLayer.bgBack();
     }
 
     FrameLayout transitionLayerView() {
-        return wallpaperTransitionLayer;
+        return desktopLayer.transitionLayer();
     }
 
     ImageView transitionOldView() {
-        return transitionOld;
+        return desktopLayer.transitionOld();
     }
 
     ImageView transitionNewView() {
-        return transitionNew;
+        return desktopLayer.transitionNew();
     }
 
     // ---------- 动态视频播放器（VideoWallpaperPlayer）宿主 ----------
@@ -3529,10 +3377,9 @@ public class LauncherActivity extends Activity {
         return backgroundItems;
     }
 
-    /** 交叉淡化后交换前后两层，下一张继续从 bgBack 进来 */
+    /** 交叉淡化后交换前后两层，下一张继续从另一层进来 */
     void swapBackgroundViews(ImageView front, ImageView back) {
-        bgFront = front;
-        bgBack = back;
+        desktopLayer.swapBackgrounds();
     }
 
     void invalidateWallpaperBlur() {
@@ -3620,14 +3467,14 @@ public class LauncherActivity extends Activity {
     /** 列表为空或解码失败时的最后兜底：直接画内置壁纸，连它都读不出来才用深色底 */
     void showBuiltinFallback() {
         Bitmap bitmap = loadBackground(BUILTIN_ITEM);
-        bgFront.setImageDrawable(null);
+        bgFrontView().setImageDrawable(null);
         if (bitmap != null) {
-            bgFront.setBackgroundColor(Color.TRANSPARENT);
-            bgFront.setImageBitmap(bitmap);
+            bgFrontView().setBackgroundColor(Color.TRANSPARENT);
+            bgFrontView().setImageBitmap(bitmap);
         } else {
-            bgFront.setBackgroundColor(0xFF0B1017);
+            bgFrontView().setBackgroundColor(0xFF0B1017);
         }
-        bgFront.setAlpha(1f);
+        bgFrontView().setAlpha(1f);
     }
 
     Bitmap loadBackground(BackgroundItem item) {
@@ -3771,19 +3618,11 @@ public class LauncherActivity extends Activity {
 
     /** 抽屉毛玻璃：当前壁纸的模糊副本，深色 tint 叠在上面 */
     private void prepareDrawerFrost() {
-        if (drawerFrostView == null) {
-            return;
-        }
         if (fourKStaticEnabled()) {
-            drawerFrostView.setImageDrawable(null);
+            drawer.setFrost(null);
             return;
         }
-        Bitmap blurred = getWallpaperBlur();
-        if (blurred != null) {
-            drawerFrostView.setImageBitmap(blurred);
-        } else {
-            drawerFrostView.setImageDrawable(null);
-        }
+        drawer.setFrost(getWallpaperBlur());
     }
 
     /** 模糊壁纸缓存：整个屏幕只算一次，供抽屉毛玻璃使用 */
@@ -3802,70 +3641,17 @@ public class LauncherActivity extends Activity {
         return blurred;
     }
 
-    /** 把 bgFront 当前实际显示的壁纸抓成 960px 宽的位图 */
+    /** 把当前实际显示的壁纸抓成 960px 宽的位图 */
     private Bitmap captureWallpaperDisplayed() {
-        if (bgFront == null || bgFront.getDrawable() == null) {
-            return null;
-        }
-        int sw = getResources().getDisplayMetrics().widthPixels;
-        int sh = getResources().getDisplayMetrics().heightPixels;
-        if (sw <= 0 || sh <= 0) {
-            return null;
-        }
-        int width = 960;
-        int height = Math.max(1, Math.round(width * sh / (float) sw));
-        Bitmap out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(out);
-        canvas.scale(width / (float) sw, height / (float) sh);
-        bgFront.draw(canvas);
-        return out;
+        return desktopLayer.captureWallpaper();
     }
 
     private Bitmap blurBitmap(Bitmap source) {
-        return blurBitmap(source, 24f);
+        return desktopLayer.blur(source);
     }
 
     private Bitmap blurBitmap(Bitmap source, float radius) {
-        if (source == null || source.isRecycled()) {
-            return null;
-        }
-        Bitmap output = null;
-        RenderScript rs = null;
-        Allocation in = null;
-        Allocation out = null;
-        ScriptIntrinsicBlur blur = null;
-        try {
-            output = Bitmap.createBitmap(source.getWidth(), source.getHeight(),
-                    Bitmap.Config.ARGB_8888);
-            rs = RenderScript.create(this);
-            in = Allocation.createFromBitmap(rs, source);
-            out = Allocation.createFromBitmap(rs, output);
-            blur = ScriptIntrinsicBlur.create(rs, Element.U8_4(rs));
-            blur.setRadius(radius);
-            blur.setInput(in);
-            blur.forEach(out);
-            out.copyTo(output);
-            return output;
-        } catch (Throwable t) {
-            Log.w(TAG, "wallpaper blur failed", t);
-            if (output != null) {
-                output.recycle();
-            }
-            return null;
-        } finally {
-            if (blur != null) {
-                blur.destroy();
-            }
-            if (in != null) {
-                in.destroy();
-            }
-            if (out != null) {
-                out.destroy();
-            }
-            if (rs != null) {
-                rs.destroy();
-            }
-        }
+        return desktopLayer.blur(source, radius);
     }
 
     // ---------- 时钟 ----------
@@ -4107,7 +3893,7 @@ public class LauncherActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final List<AppEntry> scanned = scanApps();
+                final List<AppEntry> scanned = appRepository.scan();
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
@@ -4115,21 +3901,14 @@ public class LauncherActivity extends Activity {
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
-                        allApps.clear();
-                        allApps.addAll(scanned);
-                        byKey.clear();
-                        for (AppEntry e : allApps) {
-                            byKey.put(e.key, e);
-                        }
-                        if (grid != null && grid.getAdapter() instanceof BaseAdapter) {
-                            ((BaseAdapter) grid.getAdapter()).notifyDataSetChanged();
-                        }
+                        appRepository.apply(scanned);
+                        drawer.notifyAppsChanged();
                         refreshDock();
                         if (getCurrentFocus() == null && !desktopFocusCleared
                                 && widgets != null) {
                             focusFirstDockItem();
                         }
-                        Log.i(TAG, "deferred app scan done: " + allApps.size());
+                        Log.i(TAG, "deferred app scan done: " + appRepository.all().size());
                     }
                 });
             }
@@ -4139,9 +3918,7 @@ public class LauncherActivity extends Activity {
     /** 重新读取应用列表 + 最近使用，并刷新抽屉和底部栏 */
     private void reloadApps() {
         loadApps();
-        if (grid != null && grid.getAdapter() instanceof BaseAdapter) {
-            ((BaseAdapter) grid.getAdapter()).notifyDataSetChanged();
-        }
+        drawer.notifyAppsChanged();
         refreshDock();
     }
 
@@ -4158,7 +3935,7 @@ public class LauncherActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final List<AppEntry> scanned = scanApps();
+                final List<AppEntry> scanned = appRepository.scan();
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
@@ -4166,36 +3943,16 @@ public class LauncherActivity extends Activity {
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
-                        if (sameAppList(scanned)) {
+                        if (appRepository.sameAs(scanned)) {
                             return;
                         }
-                        allApps.clear();
-                        allApps.addAll(scanned);
-                        byKey.clear();
-                        for (AppEntry e : allApps) {
-                            byKey.put(e.key, e);
-                        }
-                        if (grid != null && grid.getAdapter() instanceof BaseAdapter) {
-                            ((BaseAdapter) grid.getAdapter()).notifyDataSetChanged();
-                        }
+                        appRepository.apply(scanned);
+                        drawer.notifyAppsChanged();
                         refreshDock();
                     }
                 });
             }
         }, "app-scan").start();
-    }
-
-    /** 与当前 allApps 的应用集合是否一致（顺序按 label 排序） */
-    private boolean sameAppList(List<AppEntry> scanned) {
-        if (scanned.size() != allApps.size()) {
-            return false;
-        }
-        for (int i = 0; i < scanned.size(); i++) {
-            if (!scanned.get(i).key.equals(allApps.get(i).key)) {
-                return false;
-            }
-        }
-        return true;
     }
 
     @Override
@@ -4209,8 +3966,8 @@ public class LauncherActivity extends Activity {
             widgets.pauseAutoHide();
         }
         videoPlayer.pauseHealth();
-        if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
-            wallpaperVideo.pause();
+        if (wallpaperVideoView() != null && wallpaperVideoView().isPlaying()) {
+            wallpaperVideoView().pause();
         }
         // 注意：这里不能重置 4K 的 ready/preparing。桌面按 HOME 也会走一次 pause，
         // 一重置就会在 onNewIntent 里重新铺预览图 + 重播 4K（画面瞬间变糊再变清晰）。
@@ -4238,28 +3995,19 @@ public class LauncherActivity extends Activity {
         rememberReturnFocus();
         prepareDrawerFrost();
         hideHomeLayer();
-        drawer.setVisibility(View.VISIBLE);
-        drawer.setTranslationY(screenHeight);
-        drawer.setAlpha(0f);
-        drawer.animate().translationY(0f).alpha(1f).setDuration(OPEN_MS)
-                .setInterpolator(OPEN_EASE).start();
-        grid.requestFocus();
-        grid.setSelection(0);
+        drawer.show();
     }
 
     void closeDrawer() {
         if (!drawerOpen) return;
         drawerOpen = false;
         homeLayer.setVisibility(View.VISIBLE);
-        drawer.animate().translationY(screenHeight).alpha(0f).setDuration(CLOSE_MS)
-                .setInterpolator(CLOSE_EASE)
-                .withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        drawer.setVisibility(View.GONE);
-                        showHomeLayer(0);
-                    }
-                }).start();
+        drawer.hide(new Runnable() {
+            @Override
+            public void run() {
+                showHomeLayer(0);
+            }
+        });
         restoreReturnFocus();
         resetWidgetAutoHide();
     }
@@ -4473,7 +4221,7 @@ public class LauncherActivity extends Activity {
         int index = 0;
         if (!TextUtils.isEmpty(raw)) {
             for (String key : raw.split("\\n")) {
-                if (TextUtils.isEmpty(key) || !byKey.containsKey(key)) {
+                if (TextUtils.isEmpty(key) || !appRepository.contains(key)) {
                     continue;
                 }
                 openTimes.put(key, now - (++index) * 60000L);
@@ -4514,7 +4262,7 @@ public class LauncherActivity extends Activity {
      * 新装的 App 会立刻排到前面；打开过的 App 按最近一次打开时间前移。
      */
     List<AppEntry> buildDockSource() {
-        List<AppEntry> out = new ArrayList<>(allApps);
+        List<AppEntry> out = new ArrayList<>(appRepository.all());
         Collections.sort(out, new Comparator<AppEntry>() {
             @Override
             public int compare(AppEntry a, AppEntry b) {
@@ -4711,7 +4459,7 @@ public class LauncherActivity extends Activity {
         return shadow;
     }
 
-    private Bitmap gridIcon(AppEntry entry) {
+    Bitmap gridIcon(AppEntry entry) {
         Bitmap cached = gridIconCache.get(entry.key);
         if (cached == null) {
             cached = squareIcon(entry.icon, dp(iconSizeDp()));
@@ -4837,7 +4585,7 @@ public class LauncherActivity extends Activity {
 
     // ---------- 应用列表 ----------
 
-    private void launch(AppEntry entry) {
+    void launch(AppEntry entry) {
         rememberLaunch(entry);
         // 启动应用后收起抽屉，回到主屏。
         // 必须走 closeDrawer()：它会恢复 homeLayer（时钟/应用坞）并把焦点放回 dock；
@@ -4857,135 +4605,7 @@ public class LauncherActivity extends Activity {
     }
 
     private void loadApps() {
-        List<AppEntry> scanned = scanApps();
-        allApps.clear();
-        allApps.addAll(scanned);
-        byKey.clear();
-        for (AppEntry e : allApps) {
-            byKey.put(e.key, e);
-        }
+        appRepository.load();
     }
 
-    /** 扫描可启动应用（纯计算，可在后台线程调用） */
-    private List<AppEntry> scanApps() {
-        PackageManager pm = getPackageManager();
-        Map<String, ResolveInfo> byPackage = new LinkedHashMap<>();
-
-        Intent leanback = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
-        for (ResolveInfo ri : pm.queryIntentActivities(leanback, 0)) {
-            byPackage.put(ri.activityInfo.packageName, ri);
-        }
-        Intent normal = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_LAUNCHER);
-        for (ResolveInfo ri : pm.queryIntentActivities(normal, 0)) {
-            if (!byPackage.containsKey(ri.activityInfo.packageName)) {
-                byPackage.put(ri.activityInfo.packageName, ri);
-            }
-        }
-
-        List<AppEntry> out = new ArrayList<>();
-        for (ResolveInfo ri : byPackage.values()) {
-            if (getPackageName().equals(ri.activityInfo.packageName)) continue;
-            CharSequence label = ri.loadLabel(pm);
-            String name = TextUtils.isEmpty(label) ? ri.activityInfo.packageName : label.toString();
-            long installTime = 0L;
-            try {
-                installTime = pm.getPackageInfo(ri.activityInfo.packageName, 0).firstInstallTime;
-            } catch (PackageManager.NameNotFoundException ignored) {
-                // 取不到就当作最旧，不影响其它应用排序
-            }
-            AppEntry e = new AppEntry(name,
-                    new ComponentName(ri.activityInfo.packageName, ri.activityInfo.name),
-                    ri.loadIcon(pm), installTime);
-            out.add(e);
-        }
-
-        final java.text.Collator collator = java.text.Collator.getInstance(Locale.CHINA);
-        Collections.sort(out, new Comparator<AppEntry>() {
-            @Override
-            public int compare(AppEntry a, AppEntry b) {
-                return collator.compare(a.label, b.label);
-            }
-        });
-        return out;
-    }
-
-    // ---------- 抽屉网格适配器 ----------
-
-    private class AppAdapter extends BaseAdapter {
-        @Override
-        public int getCount() {
-            return allApps.size();
-        }
-
-        @Override
-        public Object getItem(int position) {
-            return allApps.get(position);
-        }
-
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
-
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            FrameLayout cell;
-            LinearLayout tile;
-            FrameLayout mask;
-            if (convertView instanceof FrameLayout
-                    && ((FrameLayout) convertView).getChildCount() > 0) {
-                cell = (FrameLayout) convertView;
-                tile = (LinearLayout) cell.getChildAt(0);
-                mask = (FrameLayout) tile.getChildAt(0);
-            } else {
-                // 外层 cell 负责占满整行格子，内层 tile 固定宽度并居中
-                cell = new FrameLayout(LauncherActivity.this);
-                cell.setLayoutParams(new AbsListView.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-                tile = new LinearLayout(LauncherActivity.this);
-                tile.setOrientation(LinearLayout.VERTICAL);
-                tile.setGravity(Gravity.CENTER);
-
-                // 正方形遮罩层：只包住图标，名称放在遮罩下方
-                mask = new FrameLayout(LauncherActivity.this);
-                mask.setId(0x2003);
-                int maskSize = dp(iconMaskDp());
-                tile.addView(mask, new LinearLayout.LayoutParams(maskSize, maskSize));
-
-                ImageView icon = new ImageView(LauncherActivity.this);
-                icon.setId(0x2001);
-                int size = dp(iconSizeDp());
-                mask.addView(icon, new FrameLayout.LayoutParams(
-                        size, size, Gravity.CENTER));
-
-                TextView label = new TextView(LauncherActivity.this);
-                label.setId(0x2002);
-                label.setTextColor(Color.WHITE);
-                label.setTextSize(TypedValue.COMPLEX_UNIT_SP, iconLabelSp());
-                label.setGravity(Gravity.CENTER);
-                label.setSingleLine(true);
-                label.setEllipsize(TextUtils.TruncateAt.END);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.topMargin = dp(4);
-                tile.addView(label, lp);
-
-                FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(
-                        dp(iconMaskDp() + 16), ViewGroup.LayoutParams.WRAP_CONTENT);
-                tlp.gravity = Gravity.CENTER_HORIZONTAL;
-                cell.addView(tile, tlp);
-            }
-
-            mask.setBackgroundResource(position == drawerSelectedPosition
-                    ? R.drawable.dock_focus : R.drawable.tile_bg);
-
-            AppEntry entry = allApps.get(position);
-            ((ImageView) tile.findViewById(0x2001)).setImageBitmap(gridIcon(entry));
-            ((TextView) tile.findViewById(0x2002)).setText(entry.label);
-            return cell;
-        }
-    }
 }
