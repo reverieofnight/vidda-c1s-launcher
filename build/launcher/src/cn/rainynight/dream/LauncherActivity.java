@@ -20,19 +20,12 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.PorterDuff;
-import android.graphics.PorterDuffColorFilter;
-import android.graphics.Outline;
-import android.graphics.Path;
 import android.graphics.Rect;
-import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
@@ -73,21 +66,17 @@ import android.widget.VideoView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -105,15 +94,9 @@ import org.json.JSONObject;
 public class LauncherActivity extends Activity {
 
     static final String PREFS = "launcher_prefs";
-    /** 旧格式（只有顺序、没有时间），仅用于升级迁移 */
-    private static final String KEY_RECENT = "recent_components";
-    /** 新格式：每行 "组件|最后打开时间(ms)" */
-    private static final String KEY_OPEN_TIMES = "open_times";
     /** 背景设置：转场后隐藏 UI 壁纸，显示 4K 视频层 */
     private static final String KEY_REVEAL_4K = "reveal_4k_video";
     private static final String KEY_4K_BACKGROUND = "current_4k_background";
-    /** 壁纸自定义排序：按行保存文件名，未列出的按名称排在后面 */
-    private static final String KEY_BG_ORDER = "background_order";
     /** 桌面设置：图标大小预设（small / medium / large） */
     private static final String KEY_ICON_SIZE = "icon_size";
     static final String ICON_SIZE_SMALL = "small";
@@ -165,8 +148,6 @@ public class LauncherActivity extends Activity {
     private static final String TYPE_IMAGE = "image";
     private static final String TYPE_VIDEO = "video";
 
-    /** 4K 静态壁纸：设备端编码缓存（原图目录见 WallpaperStore.STATIC_DIR） */
-    static final String FOUR_K_CACHE_DIR = "4k_cache";
     /** 内置壁纸：打包在 assets/backgrounds/ 下，直接从 APK 读取，不写入壁纸目录 */
     private static final String BUILTIN_ASSET = "backgrounds/bg_01.jpg";
     /** 内置壁纸在壁纸库中的文件名（管理页显示这个名字，并加「内置」角标） */
@@ -177,8 +158,6 @@ public class LauncherActivity extends Activity {
     static final int FOUR_K_W = 3840;
     static final int FOUR_K_H = 2160;
     static final int FOUR_K_ENCODE_FRAMES = 3;
-    /** 编码参数版本；改颜色/编码设置时递增，旧缓存下次启动自动清掉 */
-    static final String FOUR_K_CACHE_VERSION = "v6";
     /** 首帧渲染回调后给合成器一点时间，避免揭盖瞬间黑一帧 */
     static final long FOUR_K_FRAME_SETTLE_MS = 150L;
     /** 静态壁纸首帧上屏后，等后续几帧覆盖掉解码器切换瞬间的错帧再揭盖 */
@@ -237,8 +216,14 @@ public class LauncherActivity extends Activity {
     private BackgroundImageLoader imageLoader;
     /** 壁纸导入流程：本机 / USB 浏览与入库 */
     private WallpaperImporter importer;
-    /** 组件 → 最后一次打开时间；和新安装时间合并后决定底部栏顺序 */
-    private final Map<String, Long> openTimes = new HashMap<>();
+    /** 壁纸缓存：4K 转码缓存与缩略图磁盘缓存 */
+    private WallpaperCaches caches;
+    /** 最近使用：打开时间持久化与 Dock 排序 */
+    private RecentApps recentApps;
+    /** 壁纸清单：目录扫描与自定义排序 */
+    private WallpaperCatalog catalog;
+    /** 应用图标渲染：裁边、圆角、Dock 阴影与缓存 */
+    private IconRenderer icons;
 
     /** 桌面大层：壁纸两层 / 视频层 / 过渡层 / 遮罩 */
     private DesktopLayer desktopLayer;
@@ -356,6 +341,9 @@ public class LauncherActivity extends Activity {
         store = new WallpaperStore(this);
         imageLoader = new BackgroundImageLoader(this);
         importer = new WallpaperImporter(this, store);
+        caches = new WallpaperCaches(this);
+        catalog = new WallpaperCatalog(this, store, BUILTIN_ITEM);
+        icons = new IconRenderer(this);
         fourKStatic = new FourKStaticPlayer(this);
         videoPlayer = new VideoWallpaperPlayer(this);
         slideshow = new SlideshowController(this);
@@ -367,7 +355,8 @@ public class LauncherActivity extends Activity {
         iconSizePreset = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getString(KEY_ICON_SIZE, ICON_SIZE_MEDIUM);
 
-        loadOpenTimes();
+        recentApps = new RecentApps(this, appRepository);
+        recentApps.load();
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -517,30 +506,10 @@ public class LauncherActivity extends Activity {
         importer.onRequestPermissionsResult(requestCode, grantResults);
     }
 
-    private List<BackgroundItem> scanVideoBackgrounds() {
-        List<BackgroundItem> items = new ArrayList<>();
-        for (File file : store.listVideos(store.videoDir())) {
-            items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
-                    WallpaperStore.stampOf(file)));
-        }
-        return items;
-    }
-
     private void reloadVideoBackgrounds() {
-        List<BackgroundItem> found = scanVideoBackgrounds();
-        if (found.size() == videoItems.size()) {
-            boolean same = true;
-            for (int i = 0; i < found.size(); i++) {
-                BackgroundItem a = videoItems.get(i);
-                BackgroundItem b = found.get(i);
-                if (!a.name.equals(b.name) || a.stamp != b.stamp) {
-                    same = false;
-                    break;
-                }
-            }
-            if (same) {
-                return;
-            }
+        List<BackgroundItem> found = catalog.scanVideos();
+        if (WallpaperCatalog.sameItems(videoItems, found)) {
+            return;
         }
         String keep = currentVideoName;
         if (keep == null) {
@@ -706,6 +675,14 @@ public class LauncherActivity extends Activity {
 
     // ---------- 4K 静态壁纸（设备端 x264 单帧编码） ----------
 
+    WallpaperCaches caches() {
+        return caches;
+    }
+
+    IconRenderer icons() {
+        return icons;
+    }
+
     boolean fourKStaticEnabled() {
         return reveal4KVideo && x264Available && !fourKItems.isEmpty();
     }
@@ -716,36 +693,7 @@ public class LauncherActivity extends Activity {
             return;
         }
         cacheCleanupStarted = true;
-        final List<BackgroundItem> snapshot = new ArrayList<>(fourKItems);
-        final File base = getExternalFilesDir(null) != null
-                ? getExternalFilesDir(null) : getFilesDir();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                File dir = new File(base, FOUR_K_CACHE_DIR);
-                File[] files = dir.listFiles();
-                if (files == null || files.length == 0) {
-                    return;
-                }
-                Set<String> keep = new HashSet<>();
-                for (BackgroundItem item : snapshot) {
-                    keep.add(fourKCacheFile(item).getName());
-                }
-                int deleted = 0;
-                for (File file : files) {
-                    if (!file.isFile()) {
-                        continue;
-                    }
-                    if (!keep.contains(file.getName())) {
-                        if (file.delete()) {
-                            deleted++;
-                        }
-                    }
-                }
-                Log.i(TAG, "4K cache cleanup: kept=" + keep.size()
-                        + " deleted=" + deleted);
-            }
-        }, "4k-cache-cleanup").start();
+        caches.cleanupFourK(new ArrayList<>(fourKItems));
     }
 
     /**
@@ -787,8 +735,8 @@ public class LauncherActivity extends Activity {
     }
 
     private void reload4KBackgrounds() {
-        List<BackgroundItem> found = scan4KBackgrounds();
-        if (same4KBackgrounds(found)) {
+        List<BackgroundItem> found = catalog.scanStill();
+        if (WallpaperCatalog.sameItems(fourKItems, found)) {
             return;
         }
         String keep = current4KName;
@@ -814,75 +762,6 @@ public class LauncherActivity extends Activity {
             current4KName = null;
         }
         Log.i(TAG, "4K background items: " + fourKItems.size());
-    }
-
-    private boolean same4KBackgrounds(List<BackgroundItem> found) {
-        if (found.size() != fourKItems.size()) {
-            return false;
-        }
-        for (int i = 0; i < found.size(); i++) {
-            BackgroundItem a = fourKItems.get(i);
-            BackgroundItem b = found.get(i);
-            if (!a.name.equals(b.name) || a.stamp != b.stamp
-                    || !TextUtils.equals(a.filePath, b.filePath)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private List<BackgroundItem> scan4KBackgrounds() {
-        List<BackgroundItem> items = new ArrayList<>();
-        // 内置壁纸不落盘：先入列表，位图直接从 APK assets 读；排序时固定排最后
-        items.add(BUILTIN_ITEM);
-        for (File file : store.listImages(store.staticDir())) {
-            // 旧版本把内置图复制进了目录，现在改为直接读 APK，跳过遗留副本避免重名
-            if (BUILTIN_WALLPAPER.equals(file.getName())) {
-                continue;
-            }
-            items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
-                    WallpaperStore.stampOf(file), false));
-        }
-        // 有自定义排序时按 order 排，没列出的按文件名排在后面
-        final List<String> order = readBackgroundOrder();
-        final Map<String, Integer> rank = new HashMap<>();
-        for (int i = 0; i < order.size(); i++) {
-            if (!rank.containsKey(order.get(i))) {
-                rank.put(order.get(i), i);
-            }
-        }
-        Collections.sort(items, new Comparator<BackgroundItem>() {
-            @Override
-            public int compare(BackgroundItem a, BackgroundItem b) {
-                // 内置壁纸固定排在最后，不受自定义排序影响
-                if (a.builtin != b.builtin) {
-                    return a.builtin ? 1 : -1;
-                }
-                int ra = rank.containsKey(a.name) ? rank.get(a.name) : Integer.MAX_VALUE;
-                int rb = rank.containsKey(b.name) ? rank.get(b.name) : Integer.MAX_VALUE;
-                if (ra != rb) {
-                    return ra < rb ? -1 : 1;
-                }
-                return a.name.compareToIgnoreCase(b.name);
-            }
-        });
-        return items;
-    }
-
-    private List<String> readBackgroundOrder() {
-        List<String> order = new ArrayList<>();
-        String raw = getSharedPreferences(PREFS, MODE_PRIVATE)
-                .getString(KEY_BG_ORDER, "");
-        if (TextUtils.isEmpty(raw)) {
-            return order;
-        }
-        for (String line : raw.split("\n")) {
-            String name = line.trim();
-            if (!name.isEmpty()) {
-                order.add(name);
-            }
-        }
-        return order;
     }
 
     boolean isWallpaperCleared() {
@@ -1044,14 +923,6 @@ public class LauncherActivity extends Activity {
         show4KCurrent();
     }
 
-    File fourKCacheFile(BackgroundItem item) {
-        File dir = new File(getExternalFilesDir(null), FOUR_K_CACHE_DIR);
-        dir.mkdirs();
-        String safe = item.name.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return new File(dir, safe + "_" + item.stamp + "_"
-                + FOUR_K_CACHE_VERSION + ".mp4");
-    }
-
     /** 当前 4K 壁纸已编码好的缓存文件，没有则返回 null */
     File current4KCacheOrNull() {
         if (current4KName == null) {
@@ -1059,7 +930,7 @@ public class LauncherActivity extends Activity {
         }
         for (BackgroundItem item : fourKItems) {
             if (item.name.equals(current4KName)) {
-                File cache = fourKCacheFile(item);
+                File cache = caches.fourKCacheFile(item);
                 return cache.exists() && cache.length() > 0 ? cache : null;
             }
         }
@@ -1680,8 +1551,7 @@ public class LauncherActivity extends Activity {
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .putString(KEY_ICON_SIZE, preset).apply();
             // 旧尺寸的图标位图必须清掉，否则抽屉里仍是旧大小
-            gridIconCache.clear();
-            dockShadowCache.clear();
+            icons.clearCaches();
             drawer.resetSelection();
             drawer.setColumns(iconsPerRow());
             drawer.resetAdapter();
@@ -2160,122 +2030,29 @@ public class LauncherActivity extends Activity {
 
     /** 背景设置里展示的缓存概况：已生成张数 + 占用体积 */
     private String fourKCacheSummary() {
-        File[] files = fourKCacheDir().listFiles();
-        int count = files == null ? 0 : files.length;
-        long bytes = 0;
-        if (files != null) {
-            for (File f : files) {
-                bytes += f.length();
-            }
-        }
-        return "4K 缓存：已生成 " + count + " / " + fourKItems.size()
-                + " 张，占用 " + formatSize(bytes) + "。";
+        return "4K 缓存：已生成 " + caches.fourKCacheFileCount() + " / " + fourKItems.size()
+                + " 张，占用 " + WallpaperCaches.formatSize(caches.totalFourKCacheSize()) + "。";
     }
 
-    static String formatSize(long bytes) {
-        if (bytes <= 0) {
-            return "0 B";
-        }
-        if (bytes < 1024L * 1024L) {
-            return String.format(Locale.US, "%.0f KB", bytes / 1024.0);
-        }
-        return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
-    }
-
-    // ---------- 缩略图磁盘缓存 ----------
-
-    private File thumbCacheDir() {
-        File base = getExternalFilesDir(null) != null ? getExternalFilesDir(null) : getFilesDir();
-        File dir = new File(base, "thumb_cache");
-        if (!dir.exists()) {
-            dir.mkdirs();
-        }
-        return dir;
-    }
-
-    private String thumbFileName(BackgroundItem item) {
-        String safe = item.name.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return safe + "_" + item.stamp + (WallpaperStore.isVideoName(item.name) ? "_v.jpg" : "_i.jpg");
-    }
-
-    private Bitmap loadThumbFromDisk(BackgroundItem item) {
-        try {
-            File file = new File(thumbCacheDir(), thumbFileName(item));
-            if (!file.exists() || file.length() == 0L) {
-                return null;
-            }
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
-        } catch (Throwable t) {
-            Log.w(TAG, "load thumb cache failed: " + item.name, t);
-            return null;
-        }
-    }
-
-    private void saveThumbToDisk(BackgroundItem item, Bitmap bitmap) {
-        try {
-            File file = new File(thumbCacheDir(), thumbFileName(item));
-            File tmp = new File(file.getAbsolutePath() + ".tmp");
-            OutputStream out = new FileOutputStream(tmp);
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out);
-            out.close();
-            if (file.exists()) {
-                file.delete();
-            }
-            if (!tmp.renameTo(file)) {
-                tmp.delete();
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "save thumb cache failed: " + item.name, t);
-        }
-    }
-
+    /** 删除单张壁纸的缩略图缓存（内存 + 磁盘） */
     private void deleteThumbFor(BackgroundItem item) {
         thumbnailCache.remove(item.name + "|" + item.stamp);
-        try {
-            File file = new File(thumbCacheDir(), thumbFileName(item));
-            if (file.exists() && file.delete()) {
-                Log.i(TAG, "thumb cache deleted: " + item.name);
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "delete thumb cache failed: " + item.name, t);
-        }
+        caches.deleteThumb(item);
     }
 
     /** 壁纸列表变化后清掉孤儿缩略图（源文件已删的那些） */
     private void pruneThumbCacheAsync() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Set<String> keep = new HashSet<>();
-                    for (BackgroundItem item : fourKItems) {
-                        keep.add(thumbFileName(item));
-                    }
-                    for (BackgroundItem item : videoItems) {
-                        keep.add(thumbFileName(item));
-                    }
-                    for (BackgroundItem item : backgroundItems) {
-                        keep.add(thumbFileName(item));
-                    }
-                    File[] files = thumbCacheDir().listFiles();
-                    int removed = 0;
-                    if (files != null) {
-                        for (File file : files) {
-                            if (!keep.contains(file.getName())) {
-                                if (file.delete()) {
-                                    removed++;
-                                }
-                            }
-                        }
-                    }
-                    Log.i(TAG, "thumb cache pruned: kept=" + keep.size() + " removed=" + removed);
-                } catch (Throwable t) {
-                    Log.w(TAG, "prune thumb cache failed", t);
-                }
-            }
-        }, "thumb-prune").start();
+        Set<String> keep = new HashSet<>();
+        for (BackgroundItem item : fourKItems) {
+            keep.add(caches.thumbFileName(item));
+        }
+        for (BackgroundItem item : videoItems) {
+            keep.add(caches.thumbFileName(item));
+        }
+        for (BackgroundItem item : backgroundItems) {
+            keep.add(caches.thumbFileName(item));
+        }
+        caches.pruneThumbs(keep);
     }
 
     void loadThumbnail(final ImageView view, final BackgroundItem item) {
@@ -2286,7 +2063,7 @@ public class LauncherActivity extends Activity {
             view.setImageBitmap(cached);
             return;
         }
-        Bitmap onDisk = loadThumbFromDisk(item);
+        Bitmap onDisk = caches.loadThumbFromDisk(item);
         if (onDisk != null) {
             thumbnailCache.put(key, onDisk);
             view.setImageBitmap(onDisk);
@@ -2301,7 +2078,7 @@ public class LauncherActivity extends Activity {
                     return;
                 }
                 thumbnailCache.put(key, bitmap);
-                saveThumbToDisk(item, bitmap);
+                caches.saveThumbToDisk(item, bitmap);
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
@@ -2358,7 +2135,7 @@ public class LauncherActivity extends Activity {
             return;
         }
         Collections.swap(fourKItems, position, target);
-        saveBackgroundOrder();
+        catalog.saveOrder(fourKItems);
         // 列表已手动重排：重新定位当前项，避免 indexes 错位
         int current = 0;
         for (int i = 0; i < fourKItems.size(); i++) {
@@ -2373,15 +2150,6 @@ public class LauncherActivity extends Activity {
         refresh4KStaticMode();
         refreshManager();
         keepManagerTabFocus(target);
-    }
-
-    private void saveBackgroundOrder() {
-        StringBuilder sb = new StringBuilder();
-        for (BackgroundItem item : fourKItems) {
-            sb.append(item.name).append('\n');
-        }
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_BG_ORDER, sb.toString()).apply();
     }
 
     void confirmDeleteWallpaper(final BackgroundItem item) {
@@ -2420,7 +2188,7 @@ public class LauncherActivity extends Activity {
             Toast.makeText(this, "删除失败：" + item.name, Toast.LENGTH_LONG).show();
             return;
         }
-        deleteCacheFor(item);
+        caches.deleteFourKCacheFor(item);
         deleteThumbFor(item);
         if (wasCurrent && !wasVideoMode) {
             // 删除的就是正在显示的静态壁纸：直接置黑，不自动挑别的
@@ -2496,112 +2264,21 @@ public class LauncherActivity extends Activity {
         Log.i(TAG, "video wallpaper deleted: " + item.name);
     }
 
-    private File fourKCacheDir() {
-        File base = getExternalFilesDir(null) != null
-                ? getExternalFilesDir(null) : getFilesDir();
-        return new File(base, FOUR_K_CACHE_DIR);
-    }
-
-    /** 与 fourKCacheFile() 的命名前缀保持一致 */
-    private static String cachePrefixFor(BackgroundItem item) {
-        return item.name.replaceAll("[^a-zA-Z0-9._-]", "_") + "_";
-    }
-
-    long cacheSizeFor(BackgroundItem item) {
-        File[] files = fourKCacheDir().listFiles();
-        if (files == null) {
-            return 0;
-        }
-        String prefix = cachePrefixFor(item);
-        long total = 0;
-        for (File file : files) {
-            if (file.isFile() && file.getName().startsWith(prefix)) {
-                total += file.length();
-            }
-        }
-        return total;
-    }
-
-    long totalCacheSize() {
-        File[] files = fourKCacheDir().listFiles();
-        if (files == null) {
-            return 0;
-        }
-        long total = 0;
-        for (File file : files) {
-            if (file.isFile()) {
-                total += file.length();
-            }
-        }
-        return total;
-    }
-
-    int deleteCacheFor(BackgroundItem item) {
-        File[] files = fourKCacheDir().listFiles();
-        if (files == null) {
-            return 0;
-        }
-        String prefix = cachePrefixFor(item);
-        int deleted = 0;
-        for (File file : files) {
-            if (file.isFile() && file.getName().startsWith(prefix) && file.delete()) {
-                deleted++;
-            }
-        }
-        return deleted;
-    }
-
-    /** 清空全部缓存：4K 转码缓存（静态壁纸的视频缓存）+ 缩略图缓存。返回删除的文件数。 */
-    private long thumbCacheSize() {
-        File[] files = thumbCacheDir().listFiles();
-        if (files == null) {
-            return 0;
-        }
-        long total = 0;
-        for (File file : files) {
-            if (file.isFile()) {
-                total += file.length();
-            }
-        }
-        return total;
-    }
-
-    private int deleteAllCache() {
-        int deleted = 0;
-        File[] files = fourKCacheDir().listFiles();
-        if (files != null) {
-            for (File file : files) {
-                if (file.isFile() && file.delete()) {
-                    deleted++;
-                }
-            }
-        }
-        File[] thumbs = thumbCacheDir().listFiles();
-        if (thumbs != null) {
-            for (File file : thumbs) {
-                if (file.isFile() && file.delete()) {
-                    deleted++;
-                }
-            }
-        }
-        thumbnailCache.clear();
-        return deleted;
-    }
-
     void confirmClearAllCache() {
-        final long size = totalCacheSize() + thumbCacheSize();
+        final long size = caches.totalFourKCacheSize() + caches.thumbCacheSize();
         if (size <= 0) {
             Toast.makeText(this, "没有缓存", Toast.LENGTH_SHORT).show();
             return;
         }
         new AlertDialog.Builder(this)
                 .setTitle("清空缓存")
-                .setMessage("将删除全部缓存（" + formatSize(size)
+                .setMessage("将删除全部缓存（" + WallpaperCaches.formatSize(size)
                         + "）：静态壁纸的 4K 视频缓存 + 缩略图缓存。\n下次使用会重新生成，原始壁纸不会删除。")
                 .setPositiveButton("清空", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        deleteAllCache();
+                        caches.deleteAll();
+                        thumbnailCache.clear();
                         refreshManager();
                         Toast.makeText(LauncherActivity.this, "缓存已清空", Toast.LENGTH_SHORT).show();
                     }
@@ -2685,11 +2362,11 @@ public class LauncherActivity extends Activity {
     private void reloadBackgrounds() {
         // 一套原图：优先用 backgrounds_4k 的原图，UI 运行时按 1080p 采样；
         // 没有原图时才回退到 backgrounds / APK assets 的 1080p 版本。
-        List<BackgroundItem> found = scan4KBackgrounds();
+        List<BackgroundItem> found = catalog.scanStill();
         if (found.isEmpty()) {
-            found = scanBackgrounds();
+            found = catalog.scanLegacy();
         }
-        if (sameBackgrounds(found)) {
+        if (WallpaperCatalog.sameItems(backgroundItems, found)) {
             return;
         }
 
@@ -2723,37 +2400,6 @@ public class LauncherActivity extends Activity {
                 ? "none"
                 : (backgroundItems.get(0).assetName != null ? "assets" : "original");
         Log.i(TAG, "background items: " + backgroundItems.size() + " (" + source + ")");
-    }
-
-    private boolean sameBackgrounds(List<BackgroundItem> found) {
-        if (found.size() != backgroundItems.size()) {
-            return false;
-        }
-        for (int i = 0; i < found.size(); i++) {
-            BackgroundItem a = backgroundItems.get(i);
-            BackgroundItem b = found.get(i);
-            if (!a.name.equals(b.name)
-                    || a.stamp != b.stamp
-                    || !TextUtils.equals(a.assetName, b.assetName)
-                    || !TextUtils.equals(a.filePath, b.filePath)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private List<BackgroundItem> scanBackgrounds() {
-        List<BackgroundItem> items = new ArrayList<>();
-        for (File file : store.listImages(store.legacyImageDir())) {
-            items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
-                    WallpaperStore.stampOf(file)));
-        }
-        if (!items.isEmpty()) {
-            return items;
-        }
-        // 设备上没有 1080p 壁纸：直接用内置壁纸兜底，APK 里不再单独打包一份 1080p 副本
-        items.add(BUILTIN_ITEM);
-        return items;
     }
 
     /** 列表为空或解码失败时的最后兜底：直接画内置壁纸，连它都读不出来才用深色底 */
@@ -2855,7 +2501,7 @@ public class LauncherActivity extends Activity {
         return desktopLayer.blur(source);
     }
 
-    private Bitmap blurBitmap(Bitmap source, float radius) {
+    Bitmap blurBitmap(Bitmap source, float radius) {
         return desktopLayer.blur(source, radius);
     }
 
@@ -3390,102 +3036,21 @@ public class LauncherActivity extends Activity {
 
     // ---------- 最近使用 / 底部栏排序 ----------
 
-    /**
-     * 打开时间持久化格式：每行 "组件|时间戳(ms)"。
-     * 旧版本只有顺序（KEY_RECENT），首次升级时按原顺序迁移成合成时间。
-     */
-    private void loadOpenTimes() {
-        openTimes.clear();
-        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (!sp.contains(KEY_OPEN_TIMES)) {
-            migrateOldRecent(sp);
-            return;
-        }
-        String raw = sp.getString(KEY_OPEN_TIMES, "");
-        if (TextUtils.isEmpty(raw)) {
-            return;
-        }
-        for (String line : raw.split("\\n")) {
-            int split = line.lastIndexOf('|');
-            if (split <= 0 || split >= line.length() - 1) {
-                continue;
-            }
-            try {
-                openTimes.put(line.substring(0, split),
-                        Long.parseLong(line.substring(split + 1)));
-            } catch (NumberFormatException ignored) {
-                // 单条坏数据不影响其它记录
-            }
-        }
-    }
-
-    /** 旧版 recent_components 只有先后顺序、没有时间，按原顺序补成递减时间 */
-    private void migrateOldRecent(SharedPreferences sp) {
-        String raw = sp.getString(KEY_RECENT, "");
-        long now = System.currentTimeMillis();
-        int index = 0;
-        if (!TextUtils.isEmpty(raw)) {
-            for (String key : raw.split("\\n")) {
-                if (TextUtils.isEmpty(key) || !appRepository.contains(key)) {
-                    continue;
-                }
-                openTimes.put(key, now - (++index) * 60000L);
-            }
-        }
-        sp.edit().remove(KEY_RECENT).apply();
-        saveOpenTimes();
-    }
-
-    private void saveOpenTimes() {
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, Long> e : openTimes.entrySet()) {
-            if (sb.length() > 0) {
-                sb.append('\n');
-            }
-            sb.append(e.getKey()).append('|').append(e.getValue());
-        }
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_OPEN_TIMES, sb.toString()).apply();
-    }
-
-    /** 打开应用：记录这次打开的时间，底部栏按时间重排 */
-    private void rememberLaunch(AppEntry entry) {
-        openTimes.put(entry.key, System.currentTimeMillis());
-        saveOpenTimes();
-        refreshDock();
-    }
-
     private void refreshDock() {
         if (widgets != null) {
             widgets.refreshDock();
         }
     }
 
-    /**
-     * 底部栏排序：把"打开过的应用"和"新安装的应用"放在同一条时间线上。
-     * 单个应用的时间 = max(最后打开时间, 首次安装时间)，按时间倒序取前 7 个。
-     * 新装的 App 会立刻排到前面；打开过的 App 按最近一次打开时间前移。
-     */
+    /** 底部栏数据：打开过的应用和新安装的应用放在同一条时间线上排序 */
     List<AppEntry> buildDockSource() {
-        List<AppEntry> out = new ArrayList<>(appRepository.all());
-        Collections.sort(out, new Comparator<AppEntry>() {
-            @Override
-            public int compare(AppEntry a, AppEntry b) {
-                long ta = dockTime(a);
-                long tb = dockTime(b);
-                if (ta != tb) {
-                    return Long.compare(tb, ta);
-                }
-                return 0; // 时间相同保持字母序（Collections.sort 是稳定排序）
-            }
-        });
-        return out;
+        return recentApps.sorted(appRepository.all());
     }
 
-    private long dockTime(AppEntry entry) {
-        Long opened = openTimes.get(entry.key);
-        long openTime = opened == null ? 0L : opened;
-        return Math.max(openTime, entry.firstInstallTime);
+    /** 打开应用：记录这次打开的时间，底部栏按时间重排 */
+    private void rememberLaunch(AppEntry entry) {
+        recentApps.remember(entry);
+        refreshDock();
     }
 
     View makeDockItem(final AppEntry entry) {
@@ -3509,8 +3074,8 @@ public class LauncherActivity extends Activity {
         int maskSize = dp(iconMaskDp());
         item.addView(mask, new LinearLayout.LayoutParams(maskSize, maskSize));
 
-        Bitmap dockIconBitmap = squareIcon(entry.icon, iconSize);
-        Bitmap iconShadow = dockIconShadow(entry, dockIconBitmap);
+        Bitmap dockIconBitmap = icons.squareIcon(entry.icon, iconSize);
+        Bitmap iconShadow = icons.dockIconShadow(entry, dockIconBitmap);
         if (iconShadow != null) {
             ImageView shadowView = new ImageView(this);
             shadowView.setImageBitmap(iconShadow);
@@ -3549,128 +3114,6 @@ public class LauncherActivity extends Activity {
             }
         });
         return item;
-    }
-
-    /**
-     * 图标归一化：先裁掉透明边距，再等比缩放居中放进正方形画布。
-     * 这样方形图标、宽 banner、纯 logo 在视觉上大小一致。
-     */
-    private Bitmap squareIcon(Drawable src, int size) {
-        int raw = Math.max(size * 2, 192);
-        Bitmap canvasBitmap = Bitmap.createBitmap(raw, raw, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(canvasBitmap);
-
-        int iw = Math.max(1, src.getIntrinsicWidth());
-        int ih = Math.max(1, src.getIntrinsicHeight());
-        float preScale = Math.min((float) raw / iw, (float) raw / ih);
-        int w = Math.round(iw * preScale);
-        int h = Math.round(ih * preScale);
-        int left = (raw - w) / 2;
-        int top = (raw - h) / 2;
-        src.setBounds(left, top, left + w, top + h);
-        src.draw(canvas);
-
-        int[] pixels = new int[raw * raw];
-        canvasBitmap.getPixels(pixels, 0, raw, 0, 0, raw, raw);
-        int minX = raw, minY = raw, maxX = -1, maxY = -1;
-        for (int y = 0; y < raw; y++) {
-            int row = y * raw;
-            for (int x = 0; x < raw; x++) {
-                if ((pixels[row + x] >>> 24) > 16) {
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                }
-            }
-        }
-        if (maxX < 0) {
-            minX = 0; minY = 0; maxX = raw - 1; maxY = raw - 1;
-        }
-
-        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Canvas outCanvas = new Canvas(out);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-
-        int cw = maxX - minX + 1;
-        int ch = maxY - minY + 1;
-        float scale = Math.min((float) size / cw, (float) size / ch) * 0.94f;
-        int dw = Math.max(1, Math.round(cw * scale));
-        int dh = Math.max(1, Math.round(ch * scale));
-        int dx = (size - dw) / 2;
-        int dy = (size - dh) / 2;
-
-        outCanvas.drawBitmap(canvasBitmap,
-                new Rect(minX, minY, maxX + 1, maxY + 1),
-                new Rect(dx, dy, dx + dw, dy + dh),
-                paint);
-
-        // 统一图标外形：所有 app 图标裁成圆角方形（半径约 22%）
-        Bitmap masked = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Canvas maskedCanvas = new Canvas(masked);
-        Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        Path round = new Path();
-        float radius = size * 0.22f;
-        round.addRoundRect(new RectF(0f, 0f, size, size), radius, radius, Path.Direction.CW);
-        maskedCanvas.clipPath(round);
-        maskedCanvas.drawBitmap(out, 0f, 0f, maskPaint);
-        out.recycle();
-        return masked;
-    }
-
-    private final Map<String, Bitmap> gridIconCache = new HashMap<>();
-
-    /** Dock 图标阴影缓存：应用 key + 图标边长 → 带柔和阴影的位图（比图标大一圈） */
-    private final Map<String, Bitmap> dockShadowCache = new HashMap<>();
-
-    /**
-     * Dock 图标阴影：把图标 alpha 染成黑色、四周留出一圈空白后做一次模糊，
-     * 得到一张比图标略大的柔和投影，垫在图标下面用。
-     */
-    private Bitmap dockIconShadow(AppEntry entry, Bitmap icon) {
-        if (icon == null || icon.isRecycled()) {
-            return null;
-        }
-        int size = icon.getWidth();
-        String key = entry.key + "@" + size;
-        Bitmap cached = dockShadowCache.get(key);
-        if (cached != null && !cached.isRecycled()) {
-            return cached;
-        }
-
-        int pad = Math.max(4, Math.round(size * 0.12f));
-        int total = size + pad * 2;
-        Bitmap silhouette = Bitmap.createBitmap(total, total, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(silhouette);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        paint.setColorFilter(new PorterDuffColorFilter(0xFF000000, PorterDuff.Mode.SRC_IN));
-        // 往下偏一点点，看起来像被上方光源打出的投影
-        canvas.drawBitmap(icon, pad, pad + Math.round(size * 0.04f), paint);
-
-        Bitmap blurred = blurBitmap(silhouette, Math.max(3f, size * 0.09f));
-        silhouette.recycle();
-        if (blurred == null) {
-            return null;
-        }
-
-        // 整体压一点透明度：亮壁纸上不会糊成一块黑，暗壁纸上仍能托住图标
-        Bitmap shadow = Bitmap.createBitmap(total, total, Bitmap.Config.ARGB_8888);
-        Canvas shadowCanvas = new Canvas(shadow);
-        Paint alphaPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        alphaPaint.setAlpha(150);
-        shadowCanvas.drawBitmap(blurred, 0f, 0f, alphaPaint);
-        blurred.recycle();
-        dockShadowCache.put(key, shadow);
-        return shadow;
-    }
-
-    Bitmap gridIcon(AppEntry entry) {
-        Bitmap cached = gridIconCache.get(entry.key);
-        if (cached == null) {
-            cached = squareIcon(entry.icon, dp(iconSizeDp()));
-            gridIconCache.put(entry.key, cached);
-        }
-        return cached;
     }
 
     /** 桌面组件淡出并轻微上移，与抽屉滑出同步 */

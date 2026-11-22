@@ -716,10 +716,10 @@ final class WallpaperManagerPage {
         StringBuilder sb = new StringBuilder();
         if (type == VIDEOS) {
             sb.append(items.size()).append(" 个视频 · ")
-                    .append(activity.formatSize(totalVideoSize()));
+                    .append(WallpaperCaches.formatSize(totalVideoSize()));
         } else {
             sb.append(items.size()).append(" 张 · 缓存 ")
-                    .append(activity.formatSize(activity.totalCacheSize()));
+                    .append(WallpaperCaches.formatSize(activity.caches().totalFourKCacheSize()));
         }
         if (!TextUtils.isEmpty(current)) {
             sb.append("\n当前 ").append(current);
@@ -759,9 +759,9 @@ final class WallpaperManagerPage {
                 labels.add("向后移动");
                 actions.add(3);
             }
-            long cacheSize = activity.cacheSizeFor(item);
+            long cacheSize = activity.caches().fourKCacheSizeFor(item);
             labels.add(cacheSize > 0
-                    ? "清除此图缓存（" + activity.formatSize(cacheSize) + "）" : "清除此图缓存");
+                    ? "清除此图缓存（" + WallpaperCaches.formatSize(cacheSize) + "）" : "清除此图缓存");
             actions.add(4);
         }
         labels.add(video ? "删除视频" : "删除壁纸");
@@ -784,7 +784,7 @@ final class WallpaperManagerPage {
                         } else if (action == 3) {
                             activity.moveWallpaper(position, 1);
                         } else if (action == 4) {
-                            int cleared = activity.deleteCacheFor(item);
+                            int cleared = activity.caches().deleteFourKCacheFor(item);
                             refresh();
                             Toast.makeText(activity,
                                     cleared > 0 ? "缓存已清除" : "这张图没有缓存",

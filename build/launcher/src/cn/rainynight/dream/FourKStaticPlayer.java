@@ -56,7 +56,7 @@ final class FourKStaticPlayer {
                 return;
             }
             BackgroundItem target = activity.managerImageItems().get(index);
-            File cache = activity.fourKCacheFile(target);
+            File cache = activity.caches().fourKCacheFile(target);
             if (cache.exists() && cache.length() > 0) {
                 play(cache);
             } else if (encoding) {
@@ -202,7 +202,7 @@ final class FourKStaticPlayer {
         if (encoding || !mode) {
             return;
         }
-        final File cache = activity.fourKCacheFile(item);
+        final File cache = activity.caches().fourKCacheFile(item);
         if (cache.exists() && cache.length() > 0) {
             play(cache);
             return;
@@ -385,7 +385,7 @@ final class FourKStaticPlayer {
         }
         final java.util.List<BackgroundItem> items = activity.managerImageItems();
         final BackgroundItem item = items.get((activity.managerImageIndex() + 1) % items.size());
-        final File cache = activity.fourKCacheFile(item);
+        final File cache = activity.caches().fourKCacheFile(item);
         if (cache.exists() && cache.length() > 0) {
             return;
         }

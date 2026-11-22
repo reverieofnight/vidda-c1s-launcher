@@ -263,7 +263,7 @@ final class AppDrawer {
                 return cell;
             }
             AppEntry entry = apps.get(position);
-            ((ImageView) tile.findViewById(0x2001)).setImageBitmap(activity.gridIcon(entry));
+            ((ImageView) tile.findViewById(0x2001)).setImageBitmap(activity.icons().gridIcon(entry));
             ((TextView) tile.findViewById(0x2002)).setText(entry.label);
             return cell;
         }
