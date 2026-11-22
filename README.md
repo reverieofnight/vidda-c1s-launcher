@@ -37,6 +37,7 @@ build/
     www/upload.html  远程导入的上传页（构建时打进 assets/www/）
 tools/
   adb                     adb 包装器（HOME 重定向到 local/adbhome）
+  enable-autostart.sh     重新启用开机自启（无障碍服务被系统移除时跑一下）
   sync-backgrounds*.sh    批量同步壁纸到设备
 local/                    本地私有目录，整目录不入库（详见 local/README.md）
   toolchain/              （可选）JDK + build-tools + android.jar；默认在 ~/dev-tools/toolchain

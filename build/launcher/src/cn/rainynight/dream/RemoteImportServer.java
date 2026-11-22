@@ -12,13 +12,13 @@ package cn.rainynight.dream;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.MediaMetadataRetriever;
+import android.os.StatFs;
 import android.util.Log;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -27,7 +27,6 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLDecoder;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,7 +49,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class RemoteImportServer {
 
     private static final String TAG = "DSH_LAUNCHER";
-    private static final int MAX_UPLOAD_BYTES = 600 * 1024 * 1024;
+    /** 图片上传上限；视频壁纸不限制大小 */
+    private static final int MAX_IMAGE_UPLOAD_BYTES = 600 * 1024 * 1024;
     private static final int MAX_HEADER_BYTES = 16 * 1024;
     private static final int THUMB_W = 400;
     private static final int THUMB_CACHE_MAX = 48;
@@ -376,8 +376,29 @@ public class RemoteImportServer {
             first = false;
             sb.append(itemJson(name, "video", f, name.equals(currentVideo)));
         }
-        sb.append("]}");
+        sb.append("],\"storage\":").append(storageJson(dir)).append('}');
         writeResponse(out, 200, "application/json; charset=utf-8", sb.toString().getBytes("UTF-8"));
+    }
+
+    /** 壁纸所在分区的可用/总空间（字节）；读不到时返回 null，前端就不显示这一项 */
+    private static String storageJson(File dir) {
+        long total = 0L;
+        long available = 0L;
+        File probe = dir;
+        while (probe != null && !probe.exists()) {
+            probe = probe.getParentFile();
+        }
+        try {
+            StatFs fs = new StatFs(probe != null ? probe.getAbsolutePath() : "/data");
+            total = fs.getTotalBytes();
+            available = fs.getAvailableBytes();
+        } catch (Throwable t) {
+            Log.w(TAG, "read storage failed", t);
+        }
+        if (total <= 0L) {
+            return "null";
+        }
+        return "{\"total\":" + total + ",\"available\":" + available + "}";
     }
 
     private static String itemJson(String name, String type, File f, boolean current) {
@@ -544,7 +565,7 @@ public class RemoteImportServer {
             writeJson(out, 411, "{\"ok\":false,\"error\":\"content-length required\"}");
             return;
         }
-        if (contentLength > MAX_UPLOAD_BYTES) {
+        if (!video && contentLength > MAX_IMAGE_UPLOAD_BYTES) {
             writeJson(out, 413, "{\"ok\":false,\"error\":\"too large\"}");
             return;
         }

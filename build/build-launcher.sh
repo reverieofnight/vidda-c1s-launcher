@@ -53,15 +53,18 @@ if [ -f "$APP/libs/arm64-v8a/libx264jni.so" ]; then
 fi
 
 echo "[4/7] javac"
+# 源文件自动收集：拆分/新增 Java 文件后不用再改这里
+set -- "$OUT/gen/cn/rainynight/dream/R.java"
+OLDIFS=$IFS
+IFS='
+'
+for f in $(find "$APP/src" -name '*.java'); do
+  set -- "$@" "$f"
+done
+IFS=$OLDIFS
 "$JDK/bin/javac" -source 8 -target 8 -encoding UTF-8 -nowarn \
   -bootclasspath "$AJAR" -classpath "$AJAR" \
-  -d "$OUT/obj" \
-  "$OUT/gen/cn/rainynight/dream/R.java" \
-  "$APP/src/cn/rainynight/dream/LauncherActivity.java" \
-  "$APP/src/cn/rainynight/dream/BootReceiver.java" \
-  "$APP/src/cn/rainynight/dream/BootAccessibilityService.java" \
-  "$APP/src/cn/rainynight/dream/RemoteImportServer.java" \
-  "$APP/src/cn/rainynight/dream/QrCode.java" > "$OUT/javac.log" 2>&1 \
+  -d "$OUT/obj" "$@" > "$OUT/javac.log" 2>&1 \
   || { cat "$OUT/javac.log"; echo "javac 失败"; exit 1; }
 grep -v 'bootstrap class path' "$OUT/javac.log" || true
 

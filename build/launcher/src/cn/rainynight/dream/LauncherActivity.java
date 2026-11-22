@@ -16,7 +16,6 @@ import android.content.ContentResolver;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.res.AssetFileDescriptor;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
@@ -27,12 +26,13 @@ import android.graphics.Color;
 import android.graphics.ImageFormat;
 import android.graphics.YuvImage;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.Outline;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
-import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -48,7 +48,6 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.renderscript.Allocation;
 import android.renderscript.Element;
 import android.renderscript.RenderScript;
@@ -79,10 +78,8 @@ import android.widget.Toast;
 import android.widget.VideoView;
 
 import java.io.BufferedReader;
-import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileReader;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -90,7 +87,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;import java.util.Collections;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -152,11 +150,6 @@ public class LauncherActivity extends Activity {
     private static final long WIDGET_FADE_MS = 260L;
     /** 自动隐藏时控件向上位移的距离（dp），与淡出同步 */
     private static final int WIDGET_FADE_OFFSET_DP = 12;
-    /** 4K 壁纸过渡演示：两张素材每 10 秒切一次，切换瞬间用 1080p 快照交叉淡化 */
-    /** UI 壁纸显示/隐藏的快速淡化时长 */
-    private static final long REVEAL_FADE_MS = 250L;
-    /** 转场结束、首帧上屏后，1080p UI 层交接给 4K 视频的渐隐时长 */
-    private static final long TRANSITION_REVEAL_MS = 500L;
     /** 新视频启动后给 4K 视频 plane 的稳定时间，再开始 UI 层渐隐 */
     private static final long FRAME_SETTLE_MS = 1000L;
 
@@ -166,8 +159,7 @@ public class LauncherActivity extends Activity {
             Uri.parse("content://com.hisense.tv.weather/real_time_info");
     private static final long WEATHER_REFRESH_MS = 30 * 60 * 1000L;
 
-    /** 背景轮播：构建时把 背景图/ 转成 assets/backgrounds；运行时可同步到外部目录 */
-    private static final String BG_DIR = "backgrounds";
+    /** 背景轮播间隔 / 交叉淡化时长（目录与文件规则见 WallpaperStore） */
     private static final long BACKGROUND_INTERVAL_MS = 30 * 1000L;
     private static final long BG_FADE_MS = 1200L;
     private static final String KEY_SLIDESHOW = "slideshow_enabled";
@@ -183,12 +175,6 @@ public class LauncherActivity extends Activity {
     private static final float WALLPAPER_NUDGE_X = 1f;
     private static final float WALLPAPER_NUDGE_Y = 1f;
 
-    /** 动态壁纸：外部视频目录 + 当前类型记忆 */
-    private static final String VIDEO_BG_DIR = "backgrounds_video";
-    /** 公共壁纸目录：/sdcard/VIDAA桌面壁纸/{静态,动态}，卸载不删除 */
-    private static final String PUBLIC_BG_ROOT = "VIDAA桌面壁纸";
-    private static final String PUBLIC_STATIC_SUB = "静态";
-    private static final String PUBLIC_VIDEO_SUB = "动态";
     /** 已弹过一次写权限申请，避免每次启动都打扰 */
     private static final String KEY_WRITE_ASKED = "write_permission_asked";
     private static final int REQ_WRITE_STORAGE = 4102;
@@ -202,11 +188,8 @@ public class LauncherActivity extends Activity {
     private static final int MANAGER_VIDEOS = 1;
     /** 壁纸管理网格每页数量：6 列 × 3 行，正好一屏，翻页即可换一整屏 */
     private static final int MANAGER_PAGE_SIZE = 18;
-    /** 单个视频壁纸允许的最大体积 */
-    private static final long VIDEO_MAX_BYTES = 600L * 1024L * 1024L;
 
-    /** 4K 静态壁纸：外部图片目录 + 设备端编码缓存目录 */
-    private static final String FOUR_K_BG_DIR = "backgrounds_4k";
+    /** 4K 静态壁纸：设备端编码缓存（原图目录见 WallpaperStore.STATIC_DIR） */
     private static final String FOUR_K_CACHE_DIR = "4k_cache";
     /** 内置壁纸：打包在 assets/backgrounds/ 下，直接从 APK 读取，不写入壁纸目录 */
     private static final String BUILTIN_ASSET = "backgrounds/bg_01.jpg";
@@ -220,9 +203,6 @@ public class LauncherActivity extends Activity {
     private static final int FOUR_K_ENCODE_FRAMES = 3;
     /** 编码参数版本；改颜色/编码设置时递增，旧缓存下次启动自动清掉 */
     private static final String FOUR_K_CACHE_VERSION = "v6";
-    /** 先切 UI 层壁纸，4K 视频就绪后再等 1 秒，无动画隐藏 UI 层 */
-    /** 4K 模式下 UI 预览层的交叉淡化时长 */
-    private static final long FOUR_K_UI_CROSSFADE_MS = 1000L;
     /** 首帧渲染回调后给合成器一点时间，避免揭盖瞬间黑一帧 */
     private static final long FOUR_K_FRAME_SETTLE_MS = 150L;
     /** 静态壁纸首帧上屏后，等后续几帧覆盖掉解码器切换瞬间的错帧再揭盖 */
@@ -290,32 +270,10 @@ public class LauncherActivity extends Activity {
         }
     }
 
-    /** 一张背景图：要么来自 APK assets，要么来自设备外部目录 */
-    private static final class BackgroundItem {
-        final String name;
-        final String assetName;
-        final String filePath;
-        /** 外部文件的 lastModified ^ length，用来发现同步后的内容变化 */
-        final long stamp;
-        /** 随 APK 分发的内置壁纸：不可删除，管理页单独显示标识 */
-        final boolean builtin;
-
-        BackgroundItem(String name, String assetName, String filePath, long stamp) {
-            this(name, assetName, filePath, stamp, false);
-        }
-
-        BackgroundItem(String name, String assetName, String filePath, long stamp,
-                       boolean builtin) {
-            this.name = name;
-            this.assetName = assetName;
-            this.filePath = filePath;
-            this.stamp = stamp;
-            this.builtin = builtin;
-        }
-    }
-
     private final List<AppEntry> allApps = new ArrayList<>();
     private final Map<String, AppEntry> byKey = new HashMap<>();
+    /** 壁纸文件仓储：目录解析 / 扫描 / 复制入库 / 迁移 */
+    private WallpaperStore store;
     /** 组件 → 最后一次打开时间；和新安装时间合并后决定底部栏顺序 */
     private final Map<String, Long> openTimes = new HashMap<>();
 
@@ -622,6 +580,7 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        store = new WallpaperStore(this);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.BLACK));
         screenHeight = getResources().getDisplayMetrics().heightPixels;
         reveal4KVideo = getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -1055,7 +1014,8 @@ public class LauncherActivity extends Activity {
         });
         refreshClock();
         refreshDock();
-        focusFirstDockItem();
+        // 启动后不聚焦任何图标：焦点先交给透明焦点位，等用户第一次按键再落到第一个应用
+        clearDesktopFocus();
         loadPlaybackSettings();
         restoreWallpaperMode();
         handleDebugWallpaperIntent(getIntent());
@@ -1077,50 +1037,10 @@ public class LauncherActivity extends Activity {
 
     // ---------- 动态壁纸（视频文件，循环播放） ----------
 
-    private File videoBgDir() {
-        File pub = publicWallpaperSubDir(PUBLIC_VIDEO_SUB);
-        if (pub != null) {
-            return pub;
-        }
-        File base = getExternalFilesDir(null) != null
-                ? getExternalFilesDir(null) : getFilesDir();
-        return new File(base, VIDEO_BG_DIR);
-    }
-
-    /** 静态壁纸目录：优先公共目录，没权限回落到应用私有目录 */
-    private File staticWallpaperDir() {
-        File pub = publicWallpaperSubDir(PUBLIC_STATIC_SUB);
-        if (pub != null) {
-            return pub;
-        }
-        File base = getExternalFilesDir(null) != null
-                ? getExternalFilesDir(null) : getFilesDir();
-        return new File(base, FOUR_K_BG_DIR);
-    }
-
-    private boolean canWritePublicWallpapers() {
-        return checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED
-                && Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState());
-    }
-
-    /** 公共子目录；没权限或创建失败返回 null */
-    private File publicWallpaperSubDir(String sub) {
-        if (!canWritePublicWallpapers()) {
-            return null;
-        }
-        File dir = new File(new File(Environment.getExternalStorageDirectory(), PUBLIC_BG_ROOT), sub);
-        if (!dir.exists() && !dir.mkdirs()) {
-            Log.w(TAG, "create public wallpaper dir failed: " + dir);
-            return null;
-        }
-        return dir;
-    }
-
     /** 首次启动申请写权限；已有权限则先把私有目录里的壁纸迁到公共目录 */
     private void ensurePublicWallpaperAccess() {
-        if (canWritePublicWallpapers()) {
-            migrateWallpapersToPublic();
+        if (store.canWritePublic()) {
+            store.migratePrivateToPublic();
             return;
         }
         if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_WRITE_ASKED, false)) {
@@ -1132,108 +1052,12 @@ public class LauncherActivity extends Activity {
                 android.Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_WRITE_STORAGE);
     }
 
-    /** 把应用私有目录里的静态/动态壁纸搬到公共目录，卸载后不丢 */
-    private void migrateWallpapersToPublic() {
-        if (!canWritePublicWallpapers()) {
-            return;
-        }
-        File base = getExternalFilesDir(null) != null
-                ? getExternalFilesDir(null) : getFilesDir();
-        int images = migrateDir(new File(base, FOUR_K_BG_DIR),
-                publicWallpaperSubDir(PUBLIC_STATIC_SUB));
-        int videos = migrateDir(new File(base, VIDEO_BG_DIR),
-                publicWallpaperSubDir(PUBLIC_VIDEO_SUB));
-        if (images + videos > 0) {
-            Log.i(TAG, "wallpapers migrated to public: images=" + images + " videos=" + videos);
-        }
-    }
-
-    private int migrateDir(File from, File to) {
-        if (from == null || to == null || from.equals(to) || !from.isDirectory()) {
-            return 0;
-        }
-        File[] files = from.listFiles();
-        if (files == null) {
-            return 0;
-        }
-        int moved = 0;
-        for (File file : files) {
-            if (!file.isFile()) {
-                continue;
-            }
-            File dst = new File(to, file.getName());
-            if (dst.exists()) {
-                file.delete();
-                continue;
-            }
-            if (file.renameTo(dst)) {
-                moved++;
-                continue;
-            }
-            // 跨挂载点时退回复制；失败就留着，下次再试
-            InputStream in = null;
-            OutputStream out = null;
-            try {
-                in = new FileInputStream(file);
-                out = new FileOutputStream(dst);
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = in.read(buffer)) > 0) {
-                    out.write(buffer, 0, read);
-                }
-                out.flush();
-                moved++;
-                file.delete();
-            } catch (Throwable t) {
-                Log.w(TAG, "migrate wallpaper failed: " + file.getName(), t);
-                dst.delete();
-            } finally {
-                closeQuietly(in);
-                if (out != null) {
-                    try {
-                        out.close();
-                    } catch (IOException ignored) {
-                    }
-                }
-            }
-        }
-        return moved;
-    }
-
-    private static boolean isVideoName(String name) {
-        if (name == null) {
-            return false;
-        }
-        String lower = name.toLowerCase(Locale.US);
-        return lower.endsWith(".mp4") || lower.endsWith(".mkv")
-                || lower.endsWith(".webm") || lower.endsWith(".mov")
-                || lower.endsWith(".m4v") || lower.endsWith(".ts");
-    }
-
     private List<BackgroundItem> scanVideoBackgrounds() {
         List<BackgroundItem> items = new ArrayList<>();
-        File dir = videoBgDir();
-        if (!dir.exists()) {
-            dir.mkdirs();
-            return items;
-        }
-        File[] files = dir.listFiles();
-        if (files == null) {
-            return items;
-        }
-        for (File file : files) {
-            if (!file.isFile() || !isVideoName(file.getName())) {
-                continue;
-            }
+        for (File file : store.listVideos(store.videoDir())) {
             items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
-                    file.lastModified() ^ file.length()));
+                    WallpaperStore.stampOf(file)));
         }
-        Collections.sort(items, new Comparator<BackgroundItem>() {
-            @Override
-            public int compare(BackgroundItem a, BackgroundItem b) {
-                return a.name.compareToIgnoreCase(b.name);
-            }
-        });
         return items;
     }
 
@@ -1702,8 +1526,8 @@ public class LauncherActivity extends Activity {
             return;
         }
         String video = intent.getStringExtra("apply_video");
-        if (video != null && isVideoName(video)) {
-            File file = new File(videoBgDir(), video);
+        if (video != null && WallpaperStore.isVideoName(video)) {
+            File file = new File(store.videoDir(), video);
             if (file.exists()) {
                 Log.i(TAG, "debug: apply video " + video);
                 reloadVideoBackgrounds();
@@ -1713,7 +1537,7 @@ public class LauncherActivity extends Activity {
             }
         }
         String image = intent.getStringExtra("apply_image");
-        if (image != null && isImageName(image)) {
+        if (image != null && WallpaperStore.isImageName(image)) {
             Log.i(TAG, "debug: apply image " + image);
             reloadBackgrounds();
             reload4KBackgrounds();
@@ -1724,7 +1548,7 @@ public class LauncherActivity extends Activity {
         }
     }
 
-    private void applyVideoByName(String name) {
+    void applyVideoByName(String name) {
         int index = -1;
         for (int i = 0; i < videoItems.size(); i++) {
             if (videoItems.get(i).name.equals(name)) {
@@ -1833,7 +1657,7 @@ public class LauncherActivity extends Activity {
      * 避免误删用户自己上传的同名图片）。
      */
     private void removeLegacyBuiltinCopy() {
-        File legacy = new File(staticWallpaperDir(), BUILTIN_WALLPAPER);
+        File legacy = new File(store.staticDir(), BUILTIN_WALLPAPER);
         if (!legacy.isFile()) {
             return;
         }
@@ -1914,23 +1738,13 @@ public class LauncherActivity extends Activity {
         List<BackgroundItem> items = new ArrayList<>();
         // 内置壁纸不落盘：先入列表，位图直接从 APK assets 读；排序时固定排最后
         items.add(BUILTIN_ITEM);
-        File dir = staticWallpaperDir();
-        if (!dir.exists()) {
-            dir.mkdirs();
-        }
-        File[] files = dir.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                if (!file.isFile() || !isImageName(file.getName())) {
-                    continue;
-                }
-                // 旧版本把内置图复制进了目录，现在改为直接读 APK，跳过遗留副本避免重名
-                if (BUILTIN_WALLPAPER.equals(file.getName())) {
-                    continue;
-                }
-                items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
-                        file.lastModified() ^ file.length(), false));
+        for (File file : store.listImages(store.staticDir())) {
+            // 旧版本把内置图复制进了目录，现在改为直接读 APK，跳过遗留副本避免重名
+            if (BUILTIN_WALLPAPER.equals(file.getName())) {
+                continue;
             }
+            items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
+                    WallpaperStore.stampOf(file), false));
         }
         // 有自定义排序时按 order 排，没列出的按文件名排在后面
         final List<String> order = readBackgroundOrder();
@@ -3902,6 +3716,7 @@ public class LauncherActivity extends Activity {
                     .putString(KEY_ICON_SIZE, preset).apply();
             // 旧尺寸的图标位图必须清掉，否则抽屉里仍是旧大小
             gridIconCache.clear();
+            dockShadowCache.clear();
             drawerSelectedPosition = 0;
             if (grid != null) {
                 grid.setNumColumns(iconsPerRow());
@@ -4170,7 +3985,7 @@ public class LauncherActivity extends Activity {
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (remoteServer == null) {
-            remoteServer = new RemoteImportServer(new RemoteHost());
+            remoteServer = new RemoteImportServer(new RemoteImportHostBridge(this));
             remoteServer.setAssetOpener(new RemoteImportServer.AssetOpener() {
                 @Override
                 public InputStream open(String assetName) throws IOException {
@@ -4296,369 +4111,128 @@ public class LauncherActivity extends Activity {
         return fallback;
     }
 
-    private final class RemoteHost implements RemoteImportServer.Host {
-        @Override
-        public List<String> wallpaperNames() {
-            List<String> names = callOnUi(new Callable<List<String>>() {
-                @Override
-                public List<String> call() {
-                    List<String> out = new ArrayList<>(fourKItems.size());
-                    for (BackgroundItem item : fourKItems) {
-                        out.add(item.name);
-                    }
-                    return out;
+    // ===== 远程导入宿主接口：仅供 RemoteImportHostBridge 使用 =====
+
+    List<BackgroundItem> remoteImageItems() {
+        return fourKItems;
+    }
+
+    List<BackgroundItem> remoteVideoItems() {
+        return videoItems;
+    }
+
+    String remoteCurrentImageName() {
+        return videoWallpaperMode ? null : current4KName;
+    }
+
+    String remoteCurrentVideoName() {
+        return videoWallpaperMode ? currentVideoName : null;
+    }
+
+    File remoteImageDir() {
+        return store.staticDir();
+    }
+
+    File remoteVideoDir() {
+        return store.videoDir();
+    }
+
+    /** 远程上传的图片落盘后：刷新列表，壁纸库原本为空时自动设为当前 */
+    void onRemoteImageSaved(final String saved) {
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                boolean wasEmpty = fourKItems.isEmpty();
+                reloadBackgrounds();
+                reload4KBackgrounds();
+                refreshManager();
+                if (wasEmpty) {
+                    applyWallpaperByName(saved);
                 }
-            }, 3000);
-            return names == null ? new ArrayList<String>() : names;
-        }
-
-        @Override
-        public String currentWallpaper() {
-            // 只有图片模式下才有「当前图片」；放视频时图片栏没有当前项
-            return videoWallpaperMode ? null : current4KName;
-        }
-
-        @Override
-        public File wallpaperDir() {
-            return staticWallpaperDir();
-        }
-
-        @Override
-        public synchronized RemoteImportServer.SaveResult saveWallpaper(
-                String fileName, InputStream in, long length) throws IOException {
-            File dir = wallpaperDir();
-            if (!dir.exists() && !dir.mkdirs()) {
-                return null;
-            }
-            File temp = new File(dir, ".upload-" + System.currentTimeMillis() + ".tmp");
-            long written = 0;
-            OutputStream out = null;
-            try {
-                out = new FileOutputStream(temp);
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = in.read(buffer)) > 0) {
-                    out.write(buffer, 0, read);
-                    written += read;
-                }
-                out.flush();
-            } finally {
-                if (out != null) {
-                    out.close();
+                if (!remoteOpen) {
+                    Toast.makeText(LauncherActivity.this,
+                            "已收到壁纸 " + saved, Toast.LENGTH_SHORT).show();
                 }
             }
-            if (written != length) {
-                temp.delete();
-                Log.w(TAG, "remote upload incomplete: " + written + "/" + length);
-                return null;
-            }
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(temp.getAbsolutePath(), bounds);
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-                temp.delete();
-                Log.w(TAG, "remote upload not an image: " + fileName);
-                return null;
-            }
-            File dup = findSameContentFile(dir, temp);
-            if (dup != null) {
-                temp.delete();
-                Log.i(TAG, "remote upload duplicated, ignored: " + dup.getName());
-                return new RemoteImportServer.SaveResult(dup.getName(), true);
-            }
-            String base = fileName;
-            String ext = ".jpg";
-            int dot = fileName.lastIndexOf('.');
-            if (dot > 0) {
-                base = fileName.substring(0, dot);
-                ext = fileName.substring(dot);
-            }
-            File dest = new File(dir, base + ext);
-            int suffix = 1;
-            while (dest.exists()) {
-                suffix++;
-                dest = new File(dir, base + "_" + suffix + ext);
-            }
-            if (!temp.renameTo(dest)) {
-                temp.delete();
-                return null;
-            }
-            final String saved = dest.getName();
-            final int width = bounds.outWidth;
-            final int height = bounds.outHeight;
-            Log.i(TAG, "remote upload stored: " + saved + " (" + width + "x" + height + ")");
-            handler.post(new Runnable() {
-                @Override
-                public void run() {
-                    boolean wasEmpty = fourKItems.isEmpty();
-                    reloadBackgrounds();
-                    reload4KBackgrounds();
-                    refreshManager();
-                    if (wasEmpty) {
-                        applyWallpaperByName(saved);
-                    }
-                    if (!remoteOpen) {
-                        Toast.makeText(LauncherActivity.this,
-                                "已收到壁纸 " + saved, Toast.LENGTH_SHORT).show();
-                    }
-                }
-            });
-            return new RemoteImportServer.SaveResult(saved, false);
-        }
+        });
+    }
 
-        @Override
-        public boolean applyWallpaper(final String name) {
-            Boolean ok = callOnUi(new Callable<Boolean>() {
-                @Override
-                public Boolean call() {
-                    for (BackgroundItem item : fourKItems) {
-                        if (item.name.equals(name)) {
-                            applyWallpaperByName(name);
-                            return true;
+    /** 远程上传的视频落盘后：刷新列表 */
+    void onRemoteVideoSaved(final String saved) {
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                reloadVideoBackgrounds();
+                refreshManager();
+                if (!remoteOpen) {
+                    Toast.makeText(LauncherActivity.this,
+                            "已收到动态壁纸 " + saved, Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+    }
+
+    void postRemoteStatus(final String message) {
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (remoteStatusView != null) {
+                    remoteStatusView.setText(message);
+                }
+            }
+        });
+    }
+
+    void beginRemoteTransfer() {
+        callOnUi(new Callable<Void>() {
+            @Override
+            public Void call() {
+                videoTransferCount++;
+                // 页面盖着桌面时视频本来就已经暂停了，不需要再动；
+                // 只有人在桌面、视频正在播时，才为导入让路暂停解码。
+                if (videoTransferCount == 1 && videoWallpaperMode && wallpaperVideo != null
+                        && !managerOpen && !remoteOpen) {
+                    try {
+                        if (wallpaperVideo.isPlaying()) {
+                            wallpaperVideo.pause();
+                            videoPausedByTransfer = true;
+                            handler.removeCallbacks(videoHealthTick);
+                            Log.i(TAG, "remote transfer started, video wallpaper paused");
                         }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "pause video for transfer failed: " + t);
                     }
-                    return false;
                 }
-            }, 5000);
-            return ok != null && ok;
-        }
-
-        @Override
-        public boolean deleteWallpaper(final String name) {
-            Boolean ok = callOnUi(new Callable<Boolean>() {
-                @Override
-                public Boolean call() {
-                    for (BackgroundItem item : fourKItems) {
-                        if (item.name.equals(name)) {
-                            LauncherActivity.this.deleteWallpaper(item);
-                            // 内置壁纸没有实体文件，删除会被拒绝，这里直接返回 false
-                            return item.filePath == null || !new File(item.filePath).exists();
-                        }
-                    }
-                    return false;
-                }
-            }, 5000);
-            return ok != null && ok;
-        }
-
-        @Override
-        public List<String> videoNames() {
-            List<String> names = callOnUi(new Callable<List<String>>() {
-                @Override
-                public List<String> call() {
-                    List<String> out = new ArrayList<>(videoItems.size());
-                    for (BackgroundItem item : videoItems) {
-                        out.add(item.name);
-                    }
-                    return out;
-                }
-            }, 3000);
-            return names == null ? new ArrayList<String>() : names;
-        }
-
-        @Override
-        public String currentVideo() {
-            // 只有动态壁纸模式下才有「当前视频」；图片模式时视频栏没有当前项
-            return videoWallpaperMode ? currentVideoName : null;
-        }
-
-        @Override
-        public File videoDir() {
-            return videoBgDir();
-        }
-
-        @Override
-        public synchronized RemoteImportServer.SaveResult saveVideo(
-                String fileName, InputStream in, long length) throws IOException {
-            if (!isVideoName(fileName) || length <= 0 || length > VIDEO_MAX_BYTES) {
                 return null;
             }
-            File dir = videoBgDir();
-            if (!dir.exists() && !dir.mkdirs()) {
-                return null;
-            }
-            String ext = ".mp4";
-            int dot = fileName.lastIndexOf('.');
-            if (dot > 0) {
-                ext = fileName.substring(dot).toLowerCase(Locale.US);
-            }
-            File temp = new File(dir, ".upload-" + System.currentTimeMillis() + ext);
-            long written = 0;
-            OutputStream out = null;
-            try {
-                out = new FileOutputStream(temp);
-                byte[] buffer = new byte[256 * 1024];
-                int read;
-                while ((read = in.read(buffer)) > 0) {
-                    out.write(buffer, 0, read);
-                    written += read;
+        }, 3000);
+    }
+
+    void endRemoteTransfer() {
+        callOnUi(new Callable<Void>() {
+            @Override
+            public Void call() {
+                if (videoTransferCount > 0) {
+                    videoTransferCount--;
                 }
-                out.flush();
-            } finally {
-                if (out != null) {
-                    out.close();
-                }
-            }
-            if (written != length) {
-                temp.delete();
-                Log.w(TAG, "remote video incomplete: " + written + "/" + length);
-                return null;
-            }
-            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-            try {
-                retriever.setDataSource(temp.getAbsolutePath());
-                String duration = retriever.extractMetadata(
-                        MediaMetadataRetriever.METADATA_KEY_DURATION);
-                if (TextUtils.isEmpty(duration) || "0".equals(duration)) {
-                    temp.delete();
-                    Log.w(TAG, "remote video not playable: " + fileName);
+                if (videoTransferCount > 0 || !videoPausedByTransfer) {
                     return null;
                 }
-            } catch (Throwable t) {
-                temp.delete();
-                Log.w(TAG, "remote video rejected: " + fileName, t);
-                return null;
-            } finally {
-                try {
-                    retriever.release();
-                } catch (Throwable ignored) {
-                }
-            }
-            File dup = findSameContentFile(dir, temp);
-            if (dup != null) {
-                temp.delete();
-                Log.i(TAG, "remote video duplicated, ignored: " + dup.getName());
-                return new RemoteImportServer.SaveResult(dup.getName(), true);
-            }
-            String base = fileName;
-            if (dot > 0) {
-                base = fileName.substring(0, dot);
-            }
-            File dest = new File(dir, base + ext);
-            int suffix = 1;
-            while (dest.exists()) {
-                suffix++;
-                dest = new File(dir, base + "_" + suffix + ext);
-            }
-            if (!temp.renameTo(dest)) {
-                temp.delete();
-                return null;
-            }
-            final String saved = dest.getName();
-            Log.i(TAG, "remote video stored: " + saved + " (" + length + " bytes)");
-            handler.post(new Runnable() {
-                @Override
-                public void run() {
-                    reloadVideoBackgrounds();
-                    refreshManager();
-                    if (!remoteOpen) {
-                        Toast.makeText(LauncherActivity.this,
-                                "已收到动态壁纸 " + saved, Toast.LENGTH_SHORT).show();
-                    }
-                }
-            });
-            return new RemoteImportServer.SaveResult(saved, false);
-        }
-
-        @Override
-        public boolean applyVideo(final String name) {
-            Boolean ok = callOnUi(new Callable<Boolean>() {
-                @Override
-                public Boolean call() {
-                    for (BackgroundItem item : videoItems) {
-                        if (item.name.equals(name)) {
-                            applyVideoByName(name);
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            }, 8000);
-            return ok != null && ok;
-        }
-
-        @Override
-        public boolean deleteVideo(final String name) {
-            Boolean ok = callOnUi(new Callable<Boolean>() {
-                @Override
-                public Boolean call() {
-                    for (BackgroundItem item : videoItems) {
-                        if (item.name.equals(name)) {
-                            deleteVideoWallpaper(item);
-                            return !new File(item.filePath).exists();
-                        }
-                    }
-                    return false;
-                }
-            }, 5000);
-            return ok != null && ok;
-        }
-
-        @Override
-        public void onRemoteEvent(final String message) {
-            handler.post(new Runnable() {
-                @Override
-                public void run() {
-                    if (remoteStatusView != null) {
-                        remoteStatusView.setText(message);
-                    }
-                }
-            });
-        }
-
-        @Override
-        public void beginTransfer() {
-            callOnUi(new Callable<Void>() {
-                @Override
-                public Void call() {
-                    videoTransferCount++;
-                    // 页面盖着桌面时视频本来就已经暂停了，不需要再动；
-                    // 只有人在桌面、视频正在播时，才为导入让路暂停解码。
-                    if (videoTransferCount == 1 && videoWallpaperMode && wallpaperVideo != null
-                            && !managerOpen && !remoteOpen) {
-                        try {
-                            if (wallpaperVideo.isPlaying()) {
-                                wallpaperVideo.pause();
-                                videoPausedByTransfer = true;
-                                handler.removeCallbacks(videoHealthTick);
-                                Log.i(TAG, "remote transfer started, video wallpaper paused");
-                            }
-                        } catch (Throwable t) {
-                            Log.w(TAG, "pause video for transfer failed: " + t);
-                        }
-                    }
+                videoPausedByTransfer = false;
+                if (managerOpen || remoteOpen || !uiForeground) {
+                    // 传输结束时页面还开着、或桌面不在前台：等回到桌面后再续播
+                    videoResumePending = true;
+                    Log.i(TAG, "remote transfer done, resume later");
                     return null;
                 }
-            }, 3000);
-        }
-
-        @Override
-        public void endTransfer() {
-            callOnUi(new Callable<Void>() {
-                @Override
-                public Void call() {
-                    if (videoTransferCount > 0) {
-                        videoTransferCount--;
-                    }
-                    if (videoTransferCount > 0 || !videoPausedByTransfer) {
-                        return null;
-                    }
-                    videoPausedByTransfer = false;
-                    if (managerOpen || remoteOpen || !uiForeground) {
-                        // 传输结束时页面还开着、或桌面不在前台：等回到桌面后再续播
-                        videoResumePending = true;
-                        Log.i(TAG, "remote transfer done, resume later");
-                        return null;
-                    }
-                    resumeVideoAfterTransfer();
-                    return null;
-                }
-            }, 3000);
-        }
+                resumeVideoAfterTransfer();
+                return null;
+            }
+        }, 3000);
     }
 
     /** 把任务丢到主线程执行并等结果；已经在主线程则直接执行 */
-    private <T> T callOnUi(final Callable<T> task, long timeoutMs) {
+    <T> T callOnUi(final Callable<T> task, long timeoutMs) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             try {
                 return task.call();
@@ -5158,7 +4732,7 @@ public class LauncherActivity extends Activity {
             tile.addView(label, labelLp);
 
             // 视频条目叠一个播放标记：4K 视频取不到帧时也能看出这是视频，不是坏图
-            if (isVideoName(item.name)) {
+            if (WallpaperStore.isVideoName(item.name)) {
                 TextView play = new TextView(LauncherActivity.this);
                 play.setText("\u25B6");
                 play.setTextColor(0xE6FFFFFF);
@@ -5222,7 +4796,7 @@ public class LauncherActivity extends Activity {
 
     private String thumbFileName(BackgroundItem item) {
         String safe = item.name.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return safe + "_" + item.stamp + (isVideoName(item.name) ? "_v.jpg" : "_i.jpg");
+        return safe + "_" + item.stamp + (WallpaperStore.isVideoName(item.name) ? "_v.jpg" : "_i.jpg");
     }
 
     private Bitmap loadThumbFromDisk(BackgroundItem item) {
@@ -5342,7 +4916,7 @@ public class LauncherActivity extends Activity {
     }
 
     private Bitmap decodeThumbnail(BackgroundItem item, int targetW, int targetH) {
-        if (isVideoName(item.name)) {
+        if (WallpaperStore.isVideoName(item.name)) {
             return item.filePath == null ? null : decodeVideoThumbnail(item.filePath, targetW);
         }
         try {
@@ -5604,7 +5178,7 @@ public class LauncherActivity extends Activity {
                 .show();
     }
 
-    private void applyWallpaperByName(String name) {
+    void applyWallpaperByName(String name) {
         int index = -1;
         for (int i = 0; i < fourKItems.size(); i++) {
             if (fourKItems.get(i).name.equals(name)) {
@@ -5680,7 +5254,7 @@ public class LauncherActivity extends Activity {
             Toast.makeText(this, "内置壁纸不能删除", Toast.LENGTH_SHORT).show();
             return;
         }
-        boolean video = isVideoName(item.name);
+        boolean video = WallpaperStore.isVideoName(item.name);
         new AlertDialog.Builder(this)
                 .setTitle(video ? "删除视频壁纸" : "删除壁纸")
                 .setMessage((video ? "视频文件会被删除。" : "同时删除它的 4K 缓存，原始图片会被删除。")
@@ -5695,12 +5269,12 @@ public class LauncherActivity extends Activity {
                 .show();
     }
 
-    private void deleteWallpaper(BackgroundItem item) {
+    void deleteWallpaper(BackgroundItem item) {
         if (item.builtin) {
             Toast.makeText(this, "内置壁纸不能删除", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (isVideoName(item.name)) {
+        if (WallpaperStore.isVideoName(item.name)) {
             deleteVideoWallpaper(item);
             return;
         }
@@ -5749,7 +5323,7 @@ public class LauncherActivity extends Activity {
         Log.i(TAG, "wallpaper deleted: " + item.name);
     }
 
-    private void deleteVideoWallpaper(BackgroundItem item) {
+    void deleteVideoWallpaper(BackgroundItem item) {
         boolean wasCurrent = videoWallpaperMode && item.name.equals(currentVideoName);
         File file = new File(item.filePath);
         if (!file.delete()) {
@@ -6065,7 +5639,7 @@ public class LauncherActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_WRITE_STORAGE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                migrateWallpapersToPublic();
+                store.migratePrivateToPublic();
                 reload4KBackgrounds();
                 reloadVideoBackgrounds();
                 refresh4KStaticMode();
@@ -6176,7 +5750,7 @@ public class LauncherActivity extends Activity {
                     dirs.add(child);
                 } else if (child.isFile()) {
                     boolean match = wantVideo
-                            ? isVideoName(child.getName()) : isImageName(child.getName());
+                            ? WallpaperStore.isVideoName(child.getName()) : WallpaperStore.isImageName(child.getName());
                     if (match) {
                         images.add(child);
                     }
@@ -6314,7 +5888,7 @@ public class LauncherActivity extends Activity {
                         refreshManager();
                         Toast.makeText(LauncherActivity.this,
                                 okCount > 0 ? ("已导入 " + okCount + " 个视频，点一下设为当前")
-                                        : "导入失败：不是可播放的视频或文件过大",
+                                        : "导入失败：不是可播放的视频",
                                 Toast.LENGTH_LONG).show();
                         Log.i(TAG, "videos imported: " + okCount);
                     }
@@ -6325,10 +5899,10 @@ public class LauncherActivity extends Activity {
 
     /** 校验并复制视频到 files/backgrounds_video，返回新文件名；失败返回 null */
     private String copyVideoIntoDevice(File src) {
-        if (src == null || !src.isFile() || !isVideoName(src.getName())) {
+        if (src == null || !src.isFile() || !WallpaperStore.isVideoName(src.getName())) {
             return null;
         }
-        if (src.length() <= 0 || src.length() > VIDEO_MAX_BYTES) {
+        if (src.length() <= 0) {
             return null;
         }
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
@@ -6348,112 +5922,32 @@ public class LauncherActivity extends Activity {
             } catch (Throwable ignored) {
             }
         }
-        try {
-            File dir = videoBgDir();
-            if (!dir.exists()) {
-                dir.mkdirs();
-            }
-            String name = src.getName();
-            String base = name;
-            String ext = ".mp4";
-            int dot = name.lastIndexOf('.');
-            if (dot > 0) {
-                base = name.substring(0, dot);
-                ext = name.substring(dot);
-            }
-            File dest = new File(dir, base + ext);
-            int suffix = 1;
-            while (dest.exists()) {
-                suffix++;
-                dest = new File(dir, base + "_" + suffix + ext);
-            }
-            File tmp = new File(dir, ".upload-" + System.nanoTime() + ext);
-            InputStream in = new FileInputStream(src);
-            OutputStream out = new FileOutputStream(tmp);
-            try {
-                byte[] buffer = new byte[256 * 1024];
-                int read;
-                while ((read = in.read(buffer)) > 0) {
-                    out.write(buffer, 0, read);
-                }
-                out.flush();
-            } finally {
-                try {
-                    in.close();
-                } catch (Throwable ignored) {
-                }
-                try {
-                    out.close();
-                } catch (Throwable ignored) {
-                }
-            }
-            if (!tmp.renameTo(dest)) {
-                tmp.delete();
-                return null;
-            }
-            return dest.getName();
-        } catch (Throwable t) {
-            Log.w(TAG, "copy video failed: " + src.getName(), t);
+        File dest = store.copyInto(src, store.videoDir());
+        if (dest == null) {
+            Log.w(TAG, "copy video failed: " + src.getName());
             return null;
         }
+        return dest.getName();
     }
 
     /** 校验并复制到 files/backgrounds_4k，返回新文件名；失败返回 null */
     private String copyWallpaperIntoDevice(File src) {
-        if (src == null || !src.isFile() || !isImageName(src.getName())) {
+        if (src == null || !src.isFile() || !WallpaperStore.isImageName(src.getName())) {
             return null;
         }
-        try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(src.getAbsolutePath(), bounds);
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-                return null;
-            }
-            File dir = staticWallpaperDir();
-            if (!dir.exists()) {
-                dir.mkdirs();
-            }
-            String name = src.getName();
-            String base = name;
-            String ext = ".jpg";
-            int dot = name.lastIndexOf('.');
-            if (dot > 0) {
-                base = name.substring(0, dot);
-                ext = name.substring(dot);
-            }
-            File dest = new File(dir, base + ext);
-            int suffix = 1;
-            while (dest.exists()) {
-                suffix++;
-                dest = new File(dir, base + "_" + suffix + ext);
-            }
-            InputStream in = null;
-            OutputStream out = null;
-            try {
-                in = new FileInputStream(src);
-                out = new FileOutputStream(dest);
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = in.read(buffer)) > 0) {
-                    out.write(buffer, 0, read);
-                }
-                out.flush();
-            } finally {
-                closeQuietly(in);
-                if (out != null) {
-                    try {
-                        out.close();
-                    } catch (IOException ignored) {
-                    }
-                }
-            }
-            Log.i(TAG, "wallpaper imported: " + src.getAbsolutePath() + " -> " + dest.getName());
-            return dest.getName();
-        } catch (Throwable t) {
-            Log.w(TAG, "import wallpaper failed: " + src.getAbsolutePath(), t);
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(src.getAbsolutePath(), bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
             return null;
         }
+        File dest = store.copyInto(src, store.staticDir());
+        if (dest == null) {
+            Log.w(TAG, "import wallpaper failed: " + src.getAbsolutePath());
+            return null;
+        }
+        Log.i(TAG, "wallpaper imported: " + src.getAbsolutePath() + " -> " + dest.getName());
+        return dest.getName();
     }
 
     // ---------- 背景轮播 ----------
@@ -6543,27 +6037,9 @@ public class LauncherActivity extends Activity {
 
     private List<BackgroundItem> scanBackgrounds() {
         List<BackgroundItem> items = new ArrayList<>();
-
-        File dir = getExternalFilesDir(BG_DIR);
-        if (dir != null) {
-            if (!dir.exists()) {
-                dir.mkdirs();
-            }
-            File[] files = dir.listFiles();
-            if (files != null) {
-                List<String> names = new ArrayList<>();
-                for (File file : files) {
-                    if (file.isFile() && isImageName(file.getName())) {
-                        names.add(file.getName());
-                    }
-                }
-                Collections.sort(names);
-                for (String name : names) {
-                    File file = new File(dir, name);
-                    items.add(new BackgroundItem(name, null, file.getAbsolutePath(),
-                            file.lastModified() ^ file.length()));
-                }
-            }
+        for (File file : store.listImages(store.legacyImageDir())) {
+            items.add(new BackgroundItem(file.getName(), null, file.getAbsolutePath(),
+                    WallpaperStore.stampOf(file)));
         }
         if (!items.isEmpty()) {
             return items;
@@ -6571,11 +6047,6 @@ public class LauncherActivity extends Activity {
         // 设备上没有 1080p 壁纸：直接用内置壁纸兜底，APK 里不再单独打包一份 1080p 副本
         items.add(BUILTIN_ITEM);
         return items;
-    }
-
-    private static boolean isImageName(String name) {
-        String lower = name.toLowerCase(Locale.US);
-        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png");
     }
 
     private void showBackgroundImmediately(int index) {
@@ -6638,7 +6109,7 @@ public class LauncherActivity extends Activity {
 
     /** assets 内的路径：带 `/` 的按原样用（内置壁纸在 builtin/ 下），否则当作 backgrounds/ */
     private static String assetPath(String name) {
-        return name.indexOf('/') >= 0 ? name : BG_DIR + "/" + name;
+        return name.indexOf('/') >= 0 ? name : WallpaperStore.LEGACY_IMAGE_DIR + "/" + name;
     }
 
     private Bitmap loadAsset(String name) {
@@ -6718,70 +6189,6 @@ public class LauncherActivity extends Activity {
             } catch (IOException ignored) {
             }
         }
-    }
-
-    /** 在目录里找与候选文件内容完全相同的文件（先比长度，再逐字节比），没有返回 null */
-    private static File findSameContentFile(File dir, File candidate) {
-        File[] files = dir.listFiles();
-        if (files == null) {
-            return null;
-        }
-        long length = candidate.length();
-        for (File f : files) {
-            if (!f.isFile() || f.length() != length) {
-                continue;
-            }
-            if (f.getName().startsWith(".upload-")) {
-                continue;
-            }
-            if (sameBytes(candidate, f)) {
-                return f;
-            }
-        }
-        return null;
-    }
-
-    private static boolean sameBytes(File a, File b) {
-        InputStream inA = null;
-        InputStream inB = null;
-        try {
-            inA = new BufferedInputStream(new FileInputStream(a), 64 * 1024);
-            inB = new BufferedInputStream(new FileInputStream(b), 64 * 1024);
-            byte[] bufA = new byte[64 * 1024];
-            byte[] bufB = new byte[64 * 1024];
-            while (true) {
-                int nA = readFully(inA, bufA);
-                int nB = readFully(inB, bufB);
-                if (nA != nB) {
-                    return false;
-                }
-                if (nA <= 0) {
-                    return true;
-                }
-                for (int i = 0; i < nA; i++) {
-                    if (bufA[i] != bufB[i]) {
-                        return false;
-                    }
-                }
-            }
-        } catch (IOException e) {
-            return false;
-        } finally {
-            closeQuietly(inA);
-            closeQuietly(inB);
-        }
-    }
-
-    private static int readFully(InputStream in, byte[] buf) throws IOException {
-        int total = 0;
-        while (total < buf.length) {
-            int n = in.read(buf, total, buf.length - total);
-            if (n < 0) {
-                break;
-            }
-            total += n;
-        }
-        return total;
     }
 
     /** 自动轮播：两张图交叉淡入淡出，避免直接闪切 */
@@ -7001,6 +6408,10 @@ public class LauncherActivity extends Activity {
     }
 
     private Bitmap blurBitmap(Bitmap source) {
+        return blurBitmap(source, 24f);
+    }
+
+    private Bitmap blurBitmap(Bitmap source, float radius) {
         if (source == null || source.isRecycled()) {
             return null;
         }
@@ -7016,7 +6427,7 @@ public class LauncherActivity extends Activity {
             in = Allocation.createFromBitmap(rs, source);
             out = Allocation.createFromBitmap(rs, output);
             blur = ScriptIntrinsicBlur.create(rs, Element.U8_4(rs));
-            blur.setRadius(24f);
+            blur.setRadius(radius);
             blur.setInput(in);
             blur.forEach(out);
             out.copyTo(output);
@@ -7704,6 +7115,16 @@ public class LauncherActivity extends Activity {
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
             int key = event.getKeyCode();
+            View focused = getCurrentFocus();
+            if (!menuOpen && !drawerOpen && (focused == null || focused == focusSink)
+                    && (key == KeyEvent.KEYCODE_DPAD_LEFT
+                    || key == KeyEvent.KEYCODE_DPAD_RIGHT
+                    || key == KeyEvent.KEYCODE_DPAD_CENTER
+                    || key == KeyEvent.KEYCODE_ENTER)) {
+                // 桌面当前没有焦点（刚启动或按过返回）：第一次按键把焦点落到第一个应用
+                focusFirstDockItem();
+                return true;
+            }
             if (menuOpen) {
                 // 菜单打开时，上/下或再按菜单键都收起菜单
                 if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN
@@ -7883,8 +7304,17 @@ public class LauncherActivity extends Activity {
         int maskSize = dp(iconMaskDp());
         item.addView(mask, new LinearLayout.LayoutParams(maskSize, maskSize));
 
+        Bitmap dockIconBitmap = squareIcon(entry.icon, iconSize);
+        Bitmap iconShadow = dockIconShadow(entry, dockIconBitmap);
+        if (iconShadow != null) {
+            ImageView shadowView = new ImageView(this);
+            shadowView.setImageBitmap(iconShadow);
+            mask.addView(shadowView, new FrameLayout.LayoutParams(
+                    iconShadow.getWidth(), iconShadow.getHeight(), Gravity.CENTER));
+        }
+
         ImageView icon = new ImageView(this);
-        icon.setImageBitmap(squareIcon(entry.icon, iconSize));
+        icon.setImageBitmap(dockIconBitmap);
         mask.addView(icon, new FrameLayout.LayoutParams(
                 iconSize, iconSize, Gravity.CENTER));
 
@@ -7984,6 +7414,50 @@ public class LauncherActivity extends Activity {
     }
 
     private final Map<String, Bitmap> gridIconCache = new HashMap<>();
+
+    /** Dock 图标阴影缓存：应用 key + 图标边长 → 带柔和阴影的位图（比图标大一圈） */
+    private final Map<String, Bitmap> dockShadowCache = new HashMap<>();
+
+    /**
+     * Dock 图标阴影：把图标 alpha 染成黑色、四周留出一圈空白后做一次模糊，
+     * 得到一张比图标略大的柔和投影，垫在图标下面用。
+     */
+    private Bitmap dockIconShadow(AppEntry entry, Bitmap icon) {
+        if (icon == null || icon.isRecycled()) {
+            return null;
+        }
+        int size = icon.getWidth();
+        String key = entry.key + "@" + size;
+        Bitmap cached = dockShadowCache.get(key);
+        if (cached != null && !cached.isRecycled()) {
+            return cached;
+        }
+
+        int pad = Math.max(4, Math.round(size * 0.12f));
+        int total = size + pad * 2;
+        Bitmap silhouette = Bitmap.createBitmap(total, total, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(silhouette);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        paint.setColorFilter(new PorterDuffColorFilter(0xFF000000, PorterDuff.Mode.SRC_IN));
+        // 往下偏一点点，看起来像被上方光源打出的投影
+        canvas.drawBitmap(icon, pad, pad + Math.round(size * 0.04f), paint);
+
+        Bitmap blurred = blurBitmap(silhouette, Math.max(3f, size * 0.09f));
+        silhouette.recycle();
+        if (blurred == null) {
+            return null;
+        }
+
+        // 整体压一点透明度：亮壁纸上不会糊成一块黑，暗壁纸上仍能托住图标
+        Bitmap shadow = Bitmap.createBitmap(total, total, Bitmap.Config.ARGB_8888);
+        Canvas shadowCanvas = new Canvas(shadow);
+        Paint alphaPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        alphaPaint.setAlpha(150);
+        shadowCanvas.drawBitmap(blurred, 0f, 0f, alphaPaint);
+        blurred.recycle();
+        dockShadowCache.put(key, shadow);
+        return shadow;
+    }
 
     private Bitmap gridIcon(AppEntry entry) {
         Bitmap cached = gridIconCache.get(entry.key);

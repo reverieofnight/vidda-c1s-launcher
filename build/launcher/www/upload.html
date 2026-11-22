@@ -39,6 +39,15 @@
   .pager button { flex: 0 0 auto; padding: 8px 14px; border-radius: 999px; min-width: 42px; }
   .pager button.on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
   .pager .pinfo { font-size: 13px; color: #8fa0b3; padding: 0 4px; }
+  /* 分页器下方的状态栏：壁纸统计 + 存储空间 */
+  .statusbar {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start;
+    gap: 4px 20px; margin-top: 16px; padding-top: 12px;
+    border-top: 1px solid #1e2a3a; color: #dbe6f2; font-size: 12px;
+  }
+  .statusbar span { white-space: nowrap; }
+  .statusbar em { font-style: normal; color: #6f7f92; margin-right: 6px; }
+  .statusbar b { font-weight: 600; }
   .meta { padding: 8px 10px 10px; }
   /* 「设为当前」「删除」水平排列 */
   .ops { flex-direction: row; gap: 8px; }
@@ -138,6 +147,7 @@
   </div>
   <div class="grid" id="grid"></div>
   <div class="pager" id="pager"></div>
+  <div class="statusbar" id="statusbar"></div>
   <div class="empty" id="empty" style="display:none">还没有壁纸</div>
 </div>
 <div class="toast" id="toast"></div>
@@ -153,6 +163,7 @@
   var folderDrop = document.getElementById('folderDrop');
   var prog = document.getElementById('progress');
   var pager = document.getElementById('pager');
+  var statusbar = document.getElementById('statusbar');
   /* 每页数量 = 实际列数 × 窗口高度能放下的行数；列数由 CSS 决定，渲染后实测 */
   var CARD_W = 250;       // 卡片固定宽度，需与 CSS 的 .grid 列宽一致
   var MIN_GAP = 20;       // 卡片间隙最小值，需与 CSS 的 .grid gap 一致
@@ -192,7 +203,7 @@
     folderInput.accept = input.accept;
     dropTitle.textContent = video ? '点击选择视频，或把文件拖到这里'
       : '点击选择图片，或把文件拖到这里';
-    dropFormats.textContent = video ? '支持 MP4 / MKV / WebM / MOV，单个文件最大 600 MB'
+    dropFormats.textContent = video ? '支持 MP4 / MKV / WebM / MOV，不限文件大小'
       : '支持多张 JPG / PNG / WebP';
     dropHint.textContent = video ? '视频会存进电视本机，选中后循环播放作为动态壁纸'
       : '图片会直接存进电视本机，并在电视上参与 4K 静态壁纸管线';
@@ -211,6 +222,12 @@
     if (n > 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
     if (n > 1024) return Math.round(n / 1024) + ' KB';
     return n + ' B';
+  }
+
+  /** 统计/容量用：超过 1GB 就换算成 GB，避免出现 2345.6 MB */
+  function fmtBytes(n) {
+    if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+    return fmtSize(n);
   }
 
   function api(path, opts) {
@@ -333,6 +350,7 @@
       }
     }
     renderPager(pages);
+    renderStatus(lastData);
     if (compact) {
       fillViewport();
     }
@@ -501,10 +519,63 @@
     pager.appendChild(makeBtn('下一页', page + 1));
   }
 
+  /** 分页器下方的状态栏：两类壁纸的数量/体积、当前壁纸、电视存储空间 */
+  function renderStatus(data) {
+    var items = data.items || [];
+    var imgCount = 0, imgBytes = 0, vidCount = 0, vidBytes = 0;
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.type === 'video') {
+        vidCount++;
+        vidBytes += it.size || 0;
+      } else {
+        imgCount++;
+        imgBytes += it.size || 0;
+      }
+    }
+    // 当前实际显示的壁纸：动态优先（两种模式互斥，video 有值就说明正在播视频）
+    var curName = data.currentVideo || data.current;
+    var curSize = null;
+    for (var j = 0; j < items.length; j++) {
+      if (items[j].name === curName) {
+        curSize = items[j].size;
+        break;
+      }
+    }
+    var parts = [
+      { k: '静态壁纸', v: imgCount + ' 张 · ' + fmtBytes(imgBytes) },
+      { k: '动态壁纸', v: vidCount + ' 个 · ' + fmtBytes(vidBytes) },
+      { k: '当前壁纸', v: curName ? (curName + (curSize != null ? ' · ' + fmtBytes(curSize) : ''))
+                              : '无壁纸（黑屏）' }
+    ];
+    var st = data.storage;
+    if (st && st.total > 0) {
+      var usedPct = Math.round((st.total - st.available) / st.total * 100);
+      parts.push({
+        k: '存储',
+        v: '可用 ' + fmtBytes(st.available) + ' / 共 ' + fmtBytes(st.total)
+          + '（已用 ' + usedPct + '%）'
+      });
+    }
+    statusbar.innerHTML = '';
+    parts.forEach(function (p) {
+      var span = document.createElement('span');
+      var label = document.createElement('em');
+      label.textContent = p.k;
+      var value = document.createElement('b');
+      value.textContent = p.v;
+      span.appendChild(label);
+      span.appendChild(value);
+      statusbar.appendChild(span);
+    });
+  }
+
   /** 列表签名：数量 + 每项 name/size/mtime/current，用于跳过无变化的重复渲染 */
   function listSig(d) {
     var items = d.items || [];
-    var sig = items.length + '|' + (d.current || '') + '|' + (d.currentVideo || '');
+    var sig = items.length + '|' + (d.current || '') + '|' + (d.currentVideo || '')
+      // 可用空间按 64MB 取整参与比较：小幅波动不触发整列表重建
+      + '|' + (d.storage ? Math.round(d.storage.available / (64 * 1024 * 1024)) : '');
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       sig += '|' + it.name + ',' + it.size + ',' + it.mtime + ',' + (it.current ? 1 : 0);
