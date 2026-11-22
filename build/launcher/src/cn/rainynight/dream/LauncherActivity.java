@@ -176,7 +176,7 @@ public class LauncherActivity extends Activity {
     private static final String TYPE_VIDEO = "video";
 
     /** 4K 静态壁纸：设备端编码缓存（原图目录见 WallpaperStore.STATIC_DIR） */
-    private static final String FOUR_K_CACHE_DIR = "4k_cache";
+    static final String FOUR_K_CACHE_DIR = "4k_cache";
     /** 内置壁纸：打包在 assets/backgrounds/ 下，直接从 APK 读取，不写入壁纸目录 */
     private static final String BUILTIN_ASSET = "backgrounds/bg_01.jpg";
     /** 内置壁纸在壁纸库中的文件名（管理页显示这个名字，并加「内置」角标） */
@@ -184,21 +184,21 @@ public class LauncherActivity extends Activity {
     /** 内置壁纸项：4K 列表、1080p 兜底列表、最后的兜底渲染共用同一份 */
     private static final BackgroundItem BUILTIN_ITEM = new BackgroundItem(
             BUILTIN_WALLPAPER, BUILTIN_ASSET, null, 0L, true);
-    private static final int FOUR_K_W = 3840;
-    private static final int FOUR_K_H = 2160;
-    private static final int FOUR_K_ENCODE_FRAMES = 3;
+    static final int FOUR_K_W = 3840;
+    static final int FOUR_K_H = 2160;
+    static final int FOUR_K_ENCODE_FRAMES = 3;
     /** 编码参数版本；改颜色/编码设置时递增，旧缓存下次启动自动清掉 */
-    private static final String FOUR_K_CACHE_VERSION = "v6";
+    static final String FOUR_K_CACHE_VERSION = "v6";
     /** 首帧渲染回调后给合成器一点时间，避免揭盖瞬间黑一帧 */
-    private static final long FOUR_K_FRAME_SETTLE_MS = 150L;
+    static final long FOUR_K_FRAME_SETTLE_MS = 150L;
     /** 静态壁纸首帧上屏后，等后续几帧覆盖掉解码器切换瞬间的错帧再揭盖 */
-    private static final long FOUR_K_STATIC_SETTLE_MS = 350L;
+    static final long FOUR_K_STATIC_SETTLE_MS = 350L;
     /** 静态壁纸首帧上屏后，再过这么久主动暂停，把这一帧留在 surface 上 */
-    private static final long FOUR_K_PAUSE_AFTER_MS = 700L;
+    static final long FOUR_K_PAUSE_AFTER_MS = 700L;
     /** 硬切模式：UI 预览画出后 100ms 再切视频，避免点击瞬间黑 */
     private static final long FOUR_K_VIDEO_SWITCH_MS = 100L;
     /** 视频层延迟启动：UI 立即换图，用户停止操作这么久后才加载视频，避免频繁重配闪屏 */
-    private static final long FOUR_K_SWITCH_DEBOUNCE_MS = 2000L;
+    static final long FOUR_K_SWITCH_DEBOUNCE_MS = 2000L;
     /** UI 和 4K 视频使用同一个 overscan，避免一层放大一层不放大 */
     private static final float WALLPAPER_OVERSCAN = 1.002f;
 
@@ -227,7 +227,7 @@ public class LauncherActivity extends Activity {
     private static final PathInterpolator BG_EASE =
             new PathInterpolator(0.4f, 0.0f, 0.2f, 1.0f);
 
-    private static boolean x264Available;
+    static boolean x264Available;
     static {
         try {
             System.loadLibrary("x264jni");
@@ -237,7 +237,7 @@ public class LauncherActivity extends Activity {
         }
     }
 
-    private static native byte[] encodeI4204K(byte[] yuv, int width, int height, int frames);
+    static native byte[] encodeI4204K(byte[] yuv, int width, int height, int frames);
 
     static final class AppEntry {
         final String label;
@@ -284,147 +284,30 @@ public class LauncherActivity extends Activity {
     private final List<BackgroundItem> backgroundItems = new ArrayList<>();
     private final List<BackgroundItem> fourKItems = new ArrayList<>();
     private int fourKIndex = -1;
-    private boolean fourKStaticMode;
-    private boolean fourKEncoding;
-    private int fourKEncodeToken;
-    private int fourKPlayToken;
+    /** 4K 静态壁纸播放器：编码、缓存、播放与首帧状态 */
+    private FourKStaticPlayer fourKStatic;
     private String current4KName;
     private final List<BackgroundItem> videoItems = new ArrayList<>();
     private int videoIndex = -1;
     private String currentVideoName;
     private boolean videoWallpaperMode;
-    private boolean videoWallpaperReady;
-    /** surface 还没建好时先把要播的文件记下来，surfaceCreated 之后再 setVideoPath。 */
-    private File pendingVideoFile;
     private boolean videoSurfaceLost;
-    private int videoRetryCount;
-    /** 最近一次收到首帧渲染回调的时间，自检日志用 */
-    private long lastVideoFrameAt;
-    /** 视频模式下的周期自检，排查黑屏用 */
-    private final Runnable videoHealthTick = new Runnable() {
-        @Override
-        public void run() {
-            if (!videoWallpaperMode || wallpaperVideo == null) {
-                return;
-            }
-            SurfaceHolder holder = wallpaperVideo.getHolder();
-            String surface = holder.getSurface() == null
-                    ? "null"
-                    : (holder.getSurface().isValid() ? "valid" : "invalid");
-            long sinceFrame = lastVideoFrameAt == 0L ? -1L
-                    : (System.currentTimeMillis() - lastVideoFrameAt) / 1000L;
-            Log.i(TAG, "video state: surface=" + surface
-                    + " visible=" + (wallpaperVideo.getVisibility() == View.VISIBLE)
-                    + " playing=" + wallpaperVideo.isPlaying()
-                    + " pos=" + wallpaperVideo.getCurrentPosition()
-                    + " dur=" + wallpaperVideo.getDuration()
-                    + " ready=" + videoWallpaperReady
-                    + " retries=" + videoRetryCount
-                    + " sinceFirstFrame=" + sinceFrame + "s");
-            // 卡死看门狗：解码器偶尔会停住，isPlaying 仍为 true 但位置不动、
-            // 画面停在最后一帧或变黑。先重播一次，仍不动就退回静态壁纸，避免一直黑屏。
-            try {
-                int pos = wallpaperVideo.getCurrentPosition();
-                if (videoWallpaperReady && wallpaperVideo.isPlaying()
-                        && pos == lastVideoPosition) {
-                    videoStallTicks++;
-                } else {
-                    videoStallTicks = 0;
-                }
-                lastVideoPosition = pos;
-                if (videoStallTicks >= 2) {
-                    videoStallTicks = 0;
-                    if (videoStallRetries < 1) {
-                        videoStallRetries++;
-                        Log.w(TAG, "video stalled at " + pos + "ms, retry prepare");
-                        refreshVideoWallpaperMode();
-                    } else {
-                        Log.w(TAG, "video still stalled, fall back to image mode");
-                        videoStallRetries = 0;
-                        leaveVideoWallpaperMode();
-                        refresh4KStaticMode();
-                        Toast.makeText(LauncherActivity.this, "视频壁纸播放异常，已恢复静态壁纸",
-                                Toast.LENGTH_LONG).show();
-                    }
-                    return;
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "video stall check failed: " + t);
-            }
-            handler.postDelayed(this, 5000);
-        }
-    };
-    private String playingVideoPath;
-    /** 卡死看门狗：位置连续多个自检周期不变，判定解码器挂起 */
-    private int videoStallTicks;
-    private int lastVideoPosition;
-    /** 当前视频因卡死重播过几次；换视频时清零，避免无限重试 */
-    private int videoStallRetries;
-    private boolean slideshowEnabled = true;
-    private int slideshowIntervalSec = 30;
-    private boolean slideshowFade = true;
-    private boolean slideshowRandom = false;
-    private boolean videoMuted = true;
-    private MediaPlayer videoPlayerRef;
-    /** 打开壁纸管理页时主动暂停的视频；关闭管理页时原地续播 */
-    private boolean videoPausedByManager;
-    /** 远程导入进行中主动暂停的视频；传输结束后续播 */
-    private boolean videoPausedByTransfer;
-    /** 同时进行的上传请求数（浏览器可能并发传多个文件） */
-    private int videoTransferCount;
-    /** 传输结束时页面还开着，等页面关闭后再续播 */
-    private boolean videoResumePending;
+    /** 动态视频壁纸播放器：播放/暂停/看门狗/surface 重建 */
+    private VideoWallpaperPlayer videoPlayer;
     /** 桌面是否在前台：后台时导入结束不要偷偷恢复视频 */
     private boolean uiForeground = true;
-    private int videoPlayToken;
     private boolean cacheCleanupStarted;
-    private boolean fourKUiAnimationDone;
-    private boolean fourKVideoReady;
-    /** 4K 视频正在 prepare / 等首帧：避免 onResume 和 onNewIntent 各重播一次 */
-    private boolean fourKPreparing;
-    /** 连续切图防抖：UI 预览立即换图，视频层等按键停顿后再启动，只播最后一张 */
-    private final Runnable fourKVideoStart = new Runnable() {
-        @Override
-        public void run() {
-            if (!fourKStaticMode || fourKItems.isEmpty()
-                    || fourKIndex < 0 || fourKIndex >= fourKItems.size()) {
-                fourKPreparing = false;
-                return;
-            }
-            BackgroundItem target = fourKItems.get(fourKIndex);
-            File cache = fourKCacheFile(target);
-            if (cache.exists() && cache.length() > 0) {
-                play4KStatic(cache);
-            } else if (fourKEncoding) {
-                // 正在编码（可能是预编码）：结束后再排一次当前这张
-                fourKEncodeQueued = true;
-            } else {
-                encode4KStatic(target);
-            }
-        }
-    };
-    /** 编码期间用户又需要编码当前图，等当前任务结束后补上 */
-    private boolean fourKEncodeQueued;
-    /** surface 重建后重放 4K 的次数上限，防止播放失败时死循环 */
-    private int fourKSurfaceReplayCount;
     /** 最近解码过的壁纸位图：同一张图在启动/切图时只解码一次 */
     private Bitmap lastLoadedBitmap;
     private String lastLoadedKey;
-    /** 1080p 轮播：后台预解码的下一张 */
-    private Bitmap bgPreloadBitmap;
-    private String bgPreloadKey;
-    private int bgPreloadIndex = -1;
     private View startupBlackout;
     private boolean startupRevealed;
     private boolean startupAppScanDone;
     /** 后台重扫应用列表是否进行中（避免重复起线程） */
     private boolean appScanRunning;
     private int drawerSelectedPosition = 0;
-    private int backgroundIndex = -1;
-    private String currentBackgroundName;
-    private boolean bgSwitching;
-    /** bgTick 是否已经挂在 handler 上：避免重复排队，也避免被误删后不再续期 */
-    private boolean bgTickScheduled;
+    /** 1080p 背景轮播控制器 */
+    private SlideshowController slideshow;
     /** 顶部菜单条 */
     private DesktopMenu menu;
     /** 从左右键打开菜单/抽屉时，关闭后把焦点还回去 */
@@ -503,6 +386,9 @@ public class LauncherActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         store = new WallpaperStore(this);
+        fourKStatic = new FourKStaticPlayer(this);
+        videoPlayer = new VideoWallpaperPlayer(this);
+        slideshow = new SlideshowController(this);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.BLACK));
         screenHeight = getResources().getDisplayMetrics().heightPixels;
         reveal4KVideo = getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -543,49 +429,9 @@ public class LauncherActivity extends Activity {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
                 Log.i(TAG, "video surface created");
-                if (pendingVideoFile != null && !videoWallpaperMode) {
-                    // 已经切回静态壁纸了，别再补播这个待播视频
-                    Log.i(TAG, "video surface ready, drop pending " + pendingVideoFile.getName());
-                    pendingVideoFile = null;
-                }
-                if (pendingVideoFile != null) {
-                    File pending = pendingVideoFile;
-                    pendingVideoFile = null;
-                    Log.i(TAG, "video surface ready, prepare " + pending.getName());
-                    wallpaperVideo.setVideoPath(pending.getAbsolutePath());
-                } else if (videoSurfaceLost && videoWallpaperMode) {
-                    // Surface 被销毁过（打开管理页、切走再回来等），旧 MediaPlayer 已经没有
-                    // 输出目标了，直接重新 prepare 一次，否则画面会一直黑着。
-                    videoSurfaceLost = false;
-                    File file = currentVideoFile();
-                    if (file != null) {
-                        Log.i(TAG, "video surface recreated, re-prepare " + file.getName());
-                        videoWallpaperReady = false;
-                        wallpaperVideo.setVideoPath(file.getAbsolutePath());
-                    }
-                } else if (fourKStaticMode && videoSurfaceLost && !fourKPreparing
-                        && fourKSurfaceReplayCount < 2) {
-                    // 4K 静态壁纸同样要重新喂一次缓存的 mp4，否则会停在已销毁的 surface 上。
-                    // 加延迟和次数上限，避免播放失败时 surface 重建/报错互相触发死循环。
-                    videoSurfaceLost = false;
-                    fourKSurfaceReplayCount++;
-                    final File cache = current4KCacheOrNull();
-                    if (cache != null) {
-                        Log.i(TAG, "4K surface recreated, replay #" + fourKSurfaceReplayCount
-                                + " " + cache.getName());
-                        handler.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (fourKStaticMode && !videoWallpaperMode) {
-                                    invalidate4KPlayback();
-                                    play4KStatic(cache);
-                                }
-                            }
-                        }, 250);
-                    }
-                } else if (fourKStaticMode && videoSurfaceLost) {
-                    // 重试次数用尽：保持 UI 预览图，不再重放视频层
-                    videoSurfaceLost = false;
+                if (!videoPlayer.onSurfaceCreated() && videoSurfaceLost) {
+                    // 4K 静态壁纸的补播（含重试次数上限）由 FourKStaticPlayer 处理
+                    fourKStatic.handleSurfaceRecreated();
                 }
             }
 
@@ -598,8 +444,7 @@ public class LauncherActivity extends Activity {
                 Log.i(TAG, "video surface destroyed");
                 videoSurfaceLost = true;
                 // surface 没了，旧画面就不在了：重置 4K 状态，返回时才会重新 prepare
-                fourKVideoReady = false;
-                fourKPreparing = false;
+                fourKStatic.onSurfaceDestroyed();
             }
         });
         wallpaperVideo.setFocusable(false);
@@ -872,392 +717,25 @@ public class LauncherActivity extends Activity {
         refresh4KStaticMode();
     }
 
+    // ---------- 动态视频壁纸（VideoWallpaperPlayer）宿主 ----------
+
     private void refreshVideoWallpaperMode() {
-        if (wallpaperVideo == null) {
-            return;
-        }
-        if (isWallpaperCleared()) {
-            // 当前壁纸删掉后的黑屏状态，不要再自动恢复视频
-            stopVideoWallpaper();
-            return;
-        }
-        if (!videoWallpaperMode || videoItems.isEmpty()) {
-            stopVideoWallpaper();
-            return;
-        }
-        if (videoIndex < 0 || videoIndex >= videoItems.size()) {
-            videoIndex = 0;
-        }
-        BackgroundItem item = videoItems.get(videoIndex);
-        currentVideoName = item.name;
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_VIDEO_BACKGROUND, item.name)
-                .putString(KEY_WALLPAPER_TYPE, TYPE_VIDEO).apply();
-        playVideoWallpaper(new File(item.filePath));
+        videoPlayer.refresh();
     }
 
-    private void playVideoWallpaper(final File file) {
-        if (wallpaperVideo == null || file == null || !file.isFile()) {
-            return;
-        }
-        final int token = ++videoPlayToken;
-        videoWallpaperReady = false;
-        handler.removeCallbacks(bgTick);
-        bgTickScheduled = false;
-        final String prevPath = playingVideoPath;
-        if (prevPath != null && !prevPath.equals(file.getAbsolutePath())) {
-            // 换新视频：重试计数清零，避免上一个视频的失败次数影响这一个
-            videoRetryCount = 0;
-            videoStallRetries = 0;
-        }
-        videoStallTicks = 0;
-        lastVideoPosition = 0;
-        final boolean switchingVideo = videoPlayerRef != null && prevPath != null
-                && !prevPath.equals(file.getAbsolutePath());
-        if (switchingVideo) {
-            // 动态壁纸之间切换：先用当前视频的一帧铺封面，不能铺静态壁纸（会闪一下静态图）
-            final File prevFile = new File(prevPath);
-            int position = 0;
-            try {
-                position = Math.max(0, wallpaperVideo.getCurrentPosition());
-            } catch (Throwable ignored) {
-            }
-            final int captureMs = position;
-            Log.i(TAG, "video switch, capture cover @" + captureMs + "ms " + prevFile.getName());
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    final Bitmap frame = grabVideoFrame(prevFile, captureMs);
-                    handler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (token != videoPlayToken) {
-                                return;
-                            }
-                            if (frame != null) {
-                                showVideoFrameCover(frame);
-                            }
-                            startVideoWallpaper(file, token, true);
-                        }
-                    });
-                }
-            }, "video-switch-cover").start();
-            return;
-        }
-        // 已经在动态壁纸模式里重播（例如从其他应用返回、surface 重建）：
-        // 不铺静态壁纸封面，直接等视频首帧，中间黑就黑。
-        final boolean rePrepare = videoWallpaperMode && playingVideoPath != null;
-        startVideoWallpaper(file, token, rePrepare);
-    }
-
-    /** 真正开始播放下一个视频；videoFrameCover=true 表示封面已经用视频帧铺好，不再铺静态壁纸 */
-    private void startVideoWallpaper(final File file, final int token,
-                                     final boolean videoFrameCover) {
-        videoPausedByManager = false;
-        videoResumePending = false;
-        fourKStaticMode = false;
-        fourKEncoding = false;
-        fourKEncodeToken++;
-        stop4KStatic();
-        wallpaperVideo.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            @Override
-            public void onPrepared(MediaPlayer mp) {
-                if (token != videoPlayToken || !videoWallpaperMode) {
-                    return;
-                }
-                mp.setLooping(true);
-                videoPlayerRef = mp;
-                float volume = videoMuted ? 0f : 1f;
-                mp.setVolume(volume, volume);
-                // 先保留 bgFront/bgBack（显示上一张壁纸），等首帧真正渲染出来再隐藏，
-                // 避免 prepare 期间整屏黑掉。视频→视频切换时 bgFront 里是旧静态图，不能再露出来。
-                if (!videoFrameCover && bgFront != null && bgFront.getDrawable() != null) {
-                    bgFront.setVisibility(View.VISIBLE);
-                }
-                if (wallpaperTransitionLayer != null && !videoFrameCover) {
-                    wallpaperTransitionLayer.setVisibility(View.GONE);
-                }
-                wallpaperVideo.setVisibility(View.VISIBLE);
-                wallpaperVideo.start();
-                // 看门狗：3 秒内没有收到首帧就重建一次，避免停在黑屏不再恢复
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (token != videoPlayToken || !videoWallpaperMode
-                                || videoWallpaperReady) {
-                            return;
-                        }
-                        if (videoRetryCount < 1) {
-                            videoRetryCount++;
-                            Log.w(TAG, "video wallpaper no frame in 3s, retry prepare #"
-                                    + videoRetryCount);
-                            refreshVideoWallpaperMode();
-                        } else {
-                            Log.w(TAG, "video wallpaper still black, fall back to image mode");
-                            videoRetryCount = 0;
-                            leaveVideoWallpaperMode();
-                            refresh4KStaticMode();
-                        }
-                    }
-                }, 3000);
-        
-                Log.i(TAG, "video wallpaper prepared " + mp.getVideoWidth()
-                        + "x" + mp.getVideoHeight() + " " + file.getName());
-            }
-        });
-        wallpaperVideo.setOnInfoListener(new MediaPlayer.OnInfoListener() {
-            @Override
-            public boolean onInfo(MediaPlayer mp, int what, int extra) {
-                if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                    Log.i(TAG, "video wallpaper rendering start");
-                    lastVideoFrameAt = System.currentTimeMillis();
-                    videoWallpaperReady = true;
-                    videoRetryCount = 0;
-                    videoSurfaceLost = false;
-                    wallpaperVideo.setVisibility(View.VISIBLE);
-                    hideVideoCover();
-                    bgFront.setVisibility(View.GONE);
-                    bgBack.setVisibility(View.GONE);
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (token == videoPlayToken && videoWallpaperMode) {
-                                fourKVideoReady = true;
-                                maybeHide4KUiCover();
-                            }
-                        }
-                    }, FOUR_K_FRAME_SETTLE_MS);
-                }
-                return false;
-            }
-        });
-        wallpaperVideo.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-            @Override
-            public boolean onError(MediaPlayer mp, int what, int extra) {
-                if (token != videoPlayToken) {
-                    return true;
-                }
-                Log.w(TAG, "video wallpaper failed: " + what + "/" + extra);
-                // 删除当前视频后切换时，surface 正在重建，播放器会报一次 1/0；
-                // 这种瞬时错误先重试，别直接退回静态壁纸
-                if (videoRetryCount < 2) {
-                    videoRetryCount++;
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (videoWallpaperMode) {
-                                refreshVideoWallpaperMode();
-                            }
-                        }
-                    }, 500);
-                    return true;
-                }
-                videoWallpaperMode = false;
-                stopVideoWallpaper();
-                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                        .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
-                refresh4KStaticMode();
-                return true;
-            }
-        });
-        // 视频层必须可见，否则 surface 建不起来、prepare 完也拿不到帧；
-        // 空 surface 是黑的，所以在它上面先盖一层当前壁纸，等首帧渲染再撤。
-        // 视频→视频切换时封面已经用上一段视频的帧铺好，不能换成静态壁纸。
-        if (!videoFrameCover) {
-            showVideoCover();
-        }
-        wallpaperVideo.setVisibility(View.VISIBLE);
-        playingVideoPath = file.getAbsolutePath();
-        handler.removeCallbacks(videoHealthTick);
-        handler.postDelayed(videoHealthTick, 5000);
-        SurfaceHolder holder = wallpaperVideo.getHolder();
-        if (holder.getSurface() == null || !holder.getSurface().isValid()) {
-            // 没有输出目标时 setVideoPath 会 prepare 成功但永远不出帧（黑屏），
-            // 记录待播文件，等 surfaceCreated 回调里再 prepare。
-            pendingVideoFile = file;
-            Log.i(TAG, "video surface not ready, defer prepare " + file.getName());
-            // surfaceCreated 有可能在本方法之前就已经跑过（返回桌面时的竞态），
-            // 那样就没人再来接这个 pending，画面会一直黑着。这里补两次兜底。
-            handler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (token != videoPlayToken || !videoWallpaperMode
-                            || pendingVideoFile == null) {
-                        return;
-                    }
-                    SurfaceHolder h = wallpaperVideo.getHolder();
-                    if (h.getSurface() != null && h.getSurface().isValid()) {
-                        File pending = pendingVideoFile;
-                        pendingVideoFile = null;
-                        Log.i(TAG, "video surface recovered, prepare " + pending.getName());
-                        wallpaperVideo.setVideoPath(pending.getAbsolutePath());
-                    }
-                }
-            }, 200);
-            handler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (token != videoPlayToken || !videoWallpaperMode
-                            || pendingVideoFile == null) {
-                        return;
-                    }
-                    if (videoRetryCount < 1) {
-                        videoRetryCount++;
-                        Log.w(TAG, "video surface still not ready, retry prepare");
-                        refreshVideoWallpaperMode();
-                    }
-                }
-            }, 1500);
-        } else {
-            wallpaperVideo.setVideoPath(playingVideoPath);
-        }
-        Log.i(TAG, "video wallpaper play " + file.getName());
-    }
-
+    /** 停止视频并收起视频层 */
     private void stopVideoWallpaper() {
-        videoWallpaperReady = false;
-        videoPausedByManager = false;
-        videoPausedByTransfer = false;
-        videoResumePending = false;
-        playingVideoPath = null;
-        pendingVideoFile = null;
-        videoPlayToken++;
-        videoPlayerRef = null;
-        handler.removeCallbacks(videoHealthTick);
-        if (wallpaperVideo != null) {
-            wallpaperVideo.setOnPreparedListener(null);
-            wallpaperVideo.setOnInfoListener(null);
-            wallpaperVideo.setOnErrorListener(null);
-            if (wallpaperVideo.isPlaying()) {
-                wallpaperVideo.stopPlayback();
-            } else {
-                wallpaperVideo.stopPlayback();
-            }
-            wallpaperVideo.setVisibility(View.GONE);
-        }
-    }
-
-    /** 关闭循环时，播到结尾就停在最后一帧 */
-
-    /** 抓视频某一时刻的帧（缩到 1280x720）当切换封面，解不出来返回 null */
-    private Bitmap grabVideoFrame(File file, int positionMs) {
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            retriever.setDataSource(file.getAbsolutePath());
-            Bitmap frame = retriever.getScaledFrameAtTime(positionMs * 1000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 1280, 720);
-            if (frame == null) {
-                frame = retriever.getFrameAtTime(positionMs * 1000L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-            }
-            if (frame != null) {
-                Log.i(TAG, "video cover frame " + frame.getWidth() + "x" + frame.getHeight()
-                        + " @" + positionMs + "ms");
-            }
-            return frame;
-        } catch (Throwable t) {
-            Log.w(TAG, "video cover frame failed: " + t);
-            return null;
-        } finally {
-            try {
-                retriever.release();
-            } catch (Throwable ignored) {
-            }
-        }
-    }
-
-    /** 用正在播放的视频帧当过渡封面（视频→视频切换时用，避免闪静态壁纸） */
-    private void showVideoFrameCover(Bitmap frame) {
-        if (wallpaperTransitionLayer == null || transitionNew == null || frame == null) {
-            return;
-        }
-        if (transitionOld != null) {
-            transitionOld.setImageDrawable(null);
-        }
-        transitionNew.setImageBitmap(frame);
-        transitionNew.setAlpha(1f);
-        wallpaperTransitionLayer.setAlpha(1f);
-        wallpaperTransitionLayer.setVisibility(View.VISIBLE);
-        Log.i(TAG, "video frame cover shown");
-    }
-
-    /** 当前视频壁纸的真实文件（找不到返回 null） */
-    private File currentVideoFile() {
-        if (videoItems.isEmpty()) {
-            return null;
-        }
-        if (videoIndex < 0 || videoIndex >= videoItems.size()) {
-            videoIndex = 0;
-        }
-        return new File(videoItems.get(videoIndex).filePath);
+        videoPlayer.stop();
     }
 
     /** 远程导入结束：把为传输让路而暂停的视频从原位置续播 */
     private void resumeVideoAfterTransfer() {
-        videoResumePending = false;
-        if (!videoWallpaperMode || wallpaperVideo == null) {
-            return;
-        }
-        if (videoSurfaceLost || videoPlayerRef == null) {
-            refreshVideoWallpaperMode();
-            return;
-        }
-        try {
-            wallpaperVideo.start();
-            videoWallpaperReady = true;
-            handler.removeCallbacks(videoHealthTick);
-            handler.postDelayed(videoHealthTick, 5000);
-            Log.i(TAG, "remote transfer done, video wallpaper resumed");
-        } catch (Throwable t) {
-            Log.w(TAG, "resume video after transfer failed: " + t);
-            refreshVideoWallpaperMode();
-        }
+        videoPlayer.resumeAfterTransfer();
     }
 
-    /**
-     * 回到前台：
-     * 1) 播放器还停在同一个文件上、只是被 pause 了 → 直接 start() 续播，不出黑帧；
-     * 2) 播放器已经不在了（进程内重建/曾被 stop）→ 重新 prepare，bgFront 垫着上一张壁纸直到首帧。
-     * playVideoWallpaper 里还有 3 秒看门狗兜底，真卡黑屏会重试一次再退回图片模式。
-     */
+    /** 回到前台：能续播就续播，surface 丢了就重新 prepare */
     private void restoreVideoWallpaperOnForeground() {
-        if (isManagerOpen() || isRemoteOpen()) {
-            // 管理页/远程页还盖着桌面：保持暂停，等页面关闭时再续播或重播
-            Log.i(TAG, "skip video restore while manager/remote page open");
-            return;
-        }
-        if (videoPausedByTransfer) {
-            // 远程导入还没传完：先保持暂停，传完由 endTransfer 续播
-            Log.i(TAG, "skip video restore while transfer in progress");
-            return;
-        }
-        File file = currentVideoFile();
-        if (videoSurfaceLost) {
-            // surface 被销毁过（切走应用时必然发生），旧播放器已经没有输出目标：
-            // 直接重新 prepare，别等 3 秒看门狗才恢复画面。
-            videoSurfaceLost = false;
-            Log.i(TAG, "video surface lost, re-prepare on foreground");
-            refreshVideoWallpaperMode();
-            return;
-        }
-        if (videoPlayerRef != null && wallpaperVideo != null && file != null
-                && playingVideoPath != null
-                && playingVideoPath.equals(file.getAbsolutePath())) {
-            try {
-                if (!wallpaperVideo.isPlaying()) {
-                    wallpaperVideo.start();
-                }
-                videoWallpaperReady = true;
-                videoResumePending = false;
-                handler.removeCallbacks(videoHealthTick);
-                handler.postDelayed(videoHealthTick, 5000);
-                Log.i(TAG, "video wallpaper resumed " + file.getName());
-                return;
-            } catch (Throwable t) {
-                Log.w(TAG, "video resume failed: " + t);
-            }
-        }
-        refreshVideoWallpaperMode();
+        videoPlayer.restoreOnForeground();
     }
 
     /**
@@ -1289,7 +767,7 @@ public class LauncherActivity extends Activity {
             applyWallpaperByName(image);
         }
         if (intent.getBooleanExtra("video_state", false)) {
-            handler.postDelayed(videoHealthTick, 500);
+            videoPlayer.requestHealthLog();
         }
     }
 
@@ -1307,8 +785,7 @@ public class LauncherActivity extends Activity {
         videoIndex = index;
         currentVideoName = name;
         videoWallpaperMode = true;
-        videoStallRetries = 0;
-        videoRetryCount = 0;
+        videoPlayer.resetRetries();
         setWallpaperCleared(false);
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_VIDEO_BACKGROUND, name)
@@ -1331,7 +808,7 @@ public class LauncherActivity extends Activity {
         currentVideoName = videoItems.get(next).name;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_VIDEO_BACKGROUND, currentVideoName).apply();
-        playVideoWallpaper(new File(videoItems.get(next).filePath));
+        videoPlayer.play(new File(videoItems.get(next).filePath));
         Log.i(TAG, "video wallpaper switch -> " + currentVideoName);
     }
 
@@ -1346,15 +823,15 @@ public class LauncherActivity extends Activity {
         bgBack.setVisibility(View.VISIBLE);
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
-        // playVideoWallpaper 把 fourKStaticMode 关了；这里必须重新进入图片模式，
-        // 否则 applyWallpaperByName/switch4KStatic 都会因为 fourKStaticMode=false 直接 return，
+        // 播放视频时 4K 静态模式被关掉了；这里必须重新进入图片模式，
+        // 否则 applyWallpaperByName/switch4KStatic 都会因为模式未开启直接 return，
         // 表现为「换了壁纸但画面不变」。
         refresh4KStaticMode();
     }
 
     // ---------- 4K 静态壁纸（设备端 x264 单帧编码） ----------
 
-    private boolean fourKStaticEnabled() {
+    boolean fourKStaticEnabled() {
         return reveal4KVideo && x264Available && !fourKItems.isEmpty();
     }
 
@@ -1533,7 +1010,7 @@ public class LauncherActivity extends Activity {
         return order;
     }
 
-    private boolean isWallpaperCleared() {
+    boolean isWallpaperCleared() {
         return getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getBoolean(KEY_WALLPAPER_CLEARED, false);
     }
@@ -1544,9 +1021,8 @@ public class LauncherActivity extends Activity {
     }
 
     /** 把两层 UI 壁纸都撤掉，露出桌面根容器的黑色背景 */
-    private void clearWallpaperToBlack() {
-        handler.removeCallbacks(bgTick);
-        bgTickScheduled = false;
+    void clearWallpaperToBlack() {
+        slideshow.stopTimer();
         if (bgFront != null) {
             bgFront.setImageDrawable(null);
             bgFront.setVisibility(View.INVISIBLE);
@@ -1560,13 +1036,10 @@ public class LauncherActivity extends Activity {
     private void refresh4KStaticMode() {
         if (isWallpaperCleared()) {
             // 当前壁纸被删掉：不再自动挑一张，保持黑屏
-            fourKStaticMode = false;
-            fourKEncoding = false;
-            fourKEncodeToken++;
-            fourKVideoReady = false;
-            fourKPreparing = false;
-            handler.removeCallbacks(bgTick);
-            stop4KStatic();
+            fourKStatic.setMode(false);
+            fourKStatic.reset();
+            slideshow.stopTimer();
+            fourKStatic.stop();
             clearWallpaperToBlack();
             return;
         }
@@ -1577,10 +1050,9 @@ public class LauncherActivity extends Activity {
             return;
         }
         if (!fourKStaticEnabled()) {
-            fourKStaticMode = false;
-            fourKEncoding = false;
-            fourKEncodeToken++;
-            stop4KStatic();
+            fourKStatic.setMode(false);
+            fourKStatic.reset();
+            fourKStatic.stop();
             if (bgFront != null) {
                 bgFront.setVisibility(View.VISIBLE);
                 bgBack.setVisibility(View.VISIBLE);
@@ -1591,14 +1063,14 @@ public class LauncherActivity extends Activity {
             revealStartupFromBlack();
             return;
         }
-        fourKStaticMode = true;
+        fourKStatic.setMode(true);
         // 这里以前会 removeCallbacks(bgTick) 且不再续期，导致进 4K 模式后幻灯片永远不触发
         show4KCurrent();
         ensureBgTimer();
     }
 
     private void show4KCurrent() {
-        if (!fourKStaticMode || fourKItems.isEmpty() || isWallpaperCleared()) {
+        if (!fourKStatic.isMode() || fourKItems.isEmpty() || isWallpaperCleared()) {
             return;
         }
         if (fourKIndex < 0 || fourKIndex >= fourKItems.size()) {
@@ -1607,43 +1079,34 @@ public class LauncherActivity extends Activity {
         BackgroundItem item = fourKItems.get(fourKIndex);
         // 同一张图已经在播（或正在准备）就不重来：从其他应用返回时 onResume 和
         // onNewIntent 会各调一次，重复重播会让视频层多黑 1 秒多。
-        if (item.name.equals(current4KName) && (fourKVideoReady || fourKPreparing)) {
+        if (item.name.equals(current4KName)
+                && (fourKStatic.isReady() || fourKStatic.isPreparing())) {
             Log.i(TAG, "4K static already shown, skip replay");
             return;
         }
-        Log.i(TAG, "show4KCurrent " + item.name + " ready=" + fourKVideoReady
-                + " preparing=" + fourKPreparing + " surfaceLost=" + videoSurfaceLost);
+        Log.i(TAG, "show4KCurrent " + item.name + " ready=" + fourKStatic.isReady()
+                + " preparing=" + fourKStatic.isPreparing() + " surfaceLost=" + videoSurfaceLost);
         current4KName = item.name;
-        fourKSurfaceReplayCount = 0;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_4K_BACKGROUND, item.name).apply();
         // 标记"准备中"必须同步落下：视频层在防抖窗口结束后才真正启动，
         // 这期间 onResume/onNewIntent 的第二次调用不能又排一遍。
-        fourKPreparing = true;
+        fourKStatic.resetForShow();
         show4KPreview(item);
         // 防抖：连续切图时取消上一次尚未启动的视频，只播最后停在的那张，
         // 避免快速点按导致多次 setVideoPath 抢表面，出现旧帧闪回。
-        schedule4KVideoStart();
-    }
-
-    /** 重新计时：用户停止操作 2 秒后再启动视频层（UI 层已经即时换好图） */
-    private void schedule4KVideoStart() {
-        handler.removeCallbacks(fourKVideoStart);
-        handler.postDelayed(fourKVideoStart, FOUR_K_SWITCH_DEBOUNCE_MS);
+        fourKStatic.scheduleStart();
     }
 
     private void show4KPreview(BackgroundItem item) {
-        fourKUiAnimationDone = false;
-        fourKVideoReady = false;
+        fourKStatic.markPreviewShown();
         // 与 1080p 壁纸共用同一个解码缓存：同一张图只解码一次
         Bitmap bitmap = loadBackground(item);
         if (bitmap != null) {
             bgFront.setImageBitmap(bitmap);
             bgFront.setAlpha(1f);
             bgBack.setAlpha(0f);
-            bgSwitching = false;
-            backgroundIndex = fourKIndex;
-            currentBackgroundName = item.name;
+            slideshow.adoptCurrent(fourKIndex, item.name);
             wallpaperBlurKey = null;
 
             transitionOld.animate().cancel();
@@ -1655,11 +1118,10 @@ public class LauncherActivity extends Activity {
             wallpaperTransitionLayer.setAlpha(1f);
             wallpaperTransitionLayer.setVisibility(View.VISIBLE);
         }
-        fourKUiAnimationDone = true;
+        fourKStatic.markUiAnimationDone(true);
         maybeHide4KUiCover();
         // 预览图已经就绪，先淡出启动黑幕，不等 4K 首帧
         revealStartupFromBlack();
-        bgSwitching = false;
     }
 
     private void set4KStaticEnabled(boolean enabled) {
@@ -1680,7 +1142,7 @@ public class LauncherActivity extends Activity {
         switch4KStatic(direction, false);
     }
 
-    private void switch4KStatic(int direction, boolean random) {
+    void switch4KStatic(int direction, boolean random) {
         if (!fourKStaticEnabled() || fourKItems.isEmpty()) {
             return;
         }
@@ -1700,113 +1162,14 @@ public class LauncherActivity extends Activity {
         if (next == fourKIndex) {
             return;
         }
-        // UI 立即换图；视频层交给 fourKVideoStart 延迟加载，期间再切图会重置计时
+        // UI 立即换图；视频层交给 FourKStaticPlayer 延迟加载，期间再切图会重置计时
         fourKIndex = next;
-        fourKEncodeToken++;
-        invalidate4KPlayback();
+        fourKStatic.resetEncoding();
+        fourKStatic.invalidate();
         show4KCurrent();
     }
 
-    /** 主动换图/重新应用时必须清掉"已在播"标记，否则会被 show4KCurrent 的去重逻辑跳过 */
-    private void invalidate4KPlayback() {
-        // 让上一张视频的"首帧就绪"回调作废：否则它晚到时会提前把 UI 封面揭掉，
-        // 露出旧视频帧，表现为快速切图时闪回上一张。
-        fourKPlayToken++;
-        fourKVideoReady = false;
-        fourKPreparing = false;
-    }
-
-    private void encode4KStatic(final BackgroundItem item) {
-        if (fourKEncoding || !fourKStaticMode) {
-            return;
-        }
-        final File cache = fourKCacheFile(item);
-        if (cache.exists() && cache.length() > 0) {
-            play4KStatic(cache);
-            return;
-        }
-        if (!x264Available) {
-            fourKPreparing = false;
-            Toast.makeText(this, "x264 编码库不可用", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        fourKEncoding = true;
-        final int token = ++fourKEncodeToken;
-        Log.i(TAG, "encode 4K wallpaper: " + item.name);
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                Bitmap source = null;
-                try {
-                    int[] target = targetSizeFor(item);
-                    if (target == null) {
-                        throw new IOException("bad image bounds");
-                    }
-                    source = decode4KBitmap(item, target[0], target[1]);
-                    if (source == null) {
-                        throw new IOException("decode failed");
-                    }
-                    Log.i(TAG, "4K encode target " + target[0] + "x" + target[1]
-                            + " for " + item.name);
-                    byte[] yuv = bitmapToI420(source, target[0], target[1]);
-                    source.recycle();
-                    source = null;
-                    byte[] data = encodeI4204K(yuv, target[0], target[1], FOUR_K_ENCODE_FRAMES);
-                    if (data == null) {
-                        throw new IOException("x264 returned null");
-                    }
-                    write4KMp4(cache, data, target[0], target[1]);
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (isDestroyed()) {
-                                return;
-                            }
-                            fourKEncoding = false;
-                            fourKEncodeQueued = false;
-                            if (token != fourKEncodeToken) {
-                                // 编码期间用户又切了壁纸：这张作废，重新排一次延迟加载
-                                schedule4KVideoStart();
-                                return;
-                            }
-                            if (fourKStaticMode) {
-                                play4KStatic(cache);
-                            }
-                        }
-                    });
-                } catch (Throwable t) {
-                    Log.e(TAG, "encode 4K wallpaper failed", t);
-                    if (source != null) {
-                        source.recycle();
-                    }
-                    cache.delete();
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (isDestroyed()) {
-                                return;
-                            }
-                            fourKEncoding = false;
-                            if (token != fourKEncodeToken) {
-                                if (fourKEncodeQueued) {
-                                    fourKEncodeQueued = false;
-                                    schedule4KVideoStart();
-                                }
-                                return;
-                            }
-                            fourKEncodeQueued = false;
-                            fourKPreparing = false;
-                            revealStartupFromBlack();
-                            Toast.makeText(LauncherActivity.this,
-                                    "4K 壁纸生成失败", Toast.LENGTH_LONG).show();
-                        }
-                    });
-                }
-            }
-        }, "4k-wallpaper-encode").start();
-    }
-
-    private File fourKCacheFile(BackgroundItem item) {
+    File fourKCacheFile(BackgroundItem item) {
         File dir = new File(getExternalFilesDir(null), FOUR_K_CACHE_DIR);
         dir.mkdirs();
         String safe = item.name.replaceAll("[^a-zA-Z0-9._-]", "_");
@@ -1815,7 +1178,7 @@ public class LauncherActivity extends Activity {
     }
 
     /** 当前 4K 壁纸已编码好的缓存文件，没有则返回 null */
-    private File current4KCacheOrNull() {
+    File current4KCacheOrNull() {
         if (current4KName == null) {
             return null;
         }
@@ -1828,94 +1191,8 @@ public class LauncherActivity extends Activity {
         return null;
     }
 
-    private void play4KStatic(final File file) {
-        if (!fourKStaticMode || wallpaperVideo == null) {
-            return;
-        }
-        final int token = ++fourKPlayToken;
-        videoSurfaceLost = false;
-        fourKPreparing = true;
-        wallpaperVideo.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            @Override
-            public void onPrepared(MediaPlayer mp) {
-                if (token != fourKPlayToken || !fourKStaticMode) {
-                    return;
-                }
-                mp.setLooping(true);
-                mp.setVolume(0f, 0f);
-                Log.i(TAG, "4K static prepared " + mp.getVideoWidth()
-                        + "x" + mp.getVideoHeight());
-                bgFront.setVisibility(View.GONE);
-                bgBack.setVisibility(View.GONE);
-                wallpaperVideo.setVisibility(View.VISIBLE);
-                wallpaperVideo.start();
-            }
-        });
-        wallpaperVideo.setOnInfoListener(new MediaPlayer.OnInfoListener() {
-            @Override
-            public boolean onInfo(MediaPlayer mp, int what, int extra) {
-                // 快速切图时旧播放器的事件会晚到：不是当前这次播放就忽略，
-                // 否则会把 fourKPreparing 清掉，露出上一张的旧帧。
-                if (token != fourKPlayToken) {
-                    return false;
-                }
-                if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                    Log.i(TAG, "4K static rendering start");
-                    fourKPreparing = false;
-                    videoSurfaceLost = false;
-                    fourKSurfaceReplayCount = 0;
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (token == fourKPlayToken && fourKStaticMode) {
-                                fourKVideoReady = true;
-                                maybeHide4KUiCover();
-                            }
-                        }
-                    }, FOUR_K_STATIC_SETTLE_MS);
-                    // 静态壁纸只有 3 个相同的帧：等错帧被覆盖后主动暂停，把最后这一帧留在 surface 上，
-                    // 省掉解码器每 2 秒重复解一帧 4K。setLooping 仍是 true，所以永远走不到 EOS，
-                    // 不会出现播放完成后的黑屏。
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (token != fourKPlayToken || !fourKStaticMode) {
-                                return;
-                            }
-                            if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
-                                wallpaperVideo.pause();
-                                Log.i(TAG, "4K static paused on frame");
-                            }
-                        }
-                    }, FOUR_K_PAUSE_AFTER_MS);
-                }
-                return false;
-            }
-        });
-        wallpaperVideo.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-            @Override
-            public boolean onError(MediaPlayer mp, int what, int extra) {
-                Log.w(TAG, "4K static playback error " + what + "/" + extra);
-                if (token == fourKPlayToken) {
-                    fourKPreparing = false;
-                    wallpaperVideo.setVisibility(View.GONE);
-                    if (wallpaperTransitionLayer != null) {
-                        wallpaperTransitionLayer.setVisibility(View.GONE);
-                    }
-                    bgFront.setVisibility(View.VISIBLE);
-                    bgBack.setVisibility(View.VISIBLE);
-                    revealStartupFromBlack();
-                }
-                return true;
-            }
-        });
-        Log.i(TAG, "4K static play " + file.getName());
-        wallpaperVideo.setVisibility(View.VISIBLE);
-        wallpaperVideo.setVideoPath(file.getAbsolutePath());
-    }
-
     /** 视频层在准备期间是空的黑 surface，用当前静态壁纸铺一层封面挡住 */
-    private void showVideoCover() {
+    void showVideoCover() {
         if (wallpaperTransitionLayer == null || transitionNew == null) {
             return;
         }
@@ -1937,7 +1214,7 @@ public class LauncherActivity extends Activity {
         Log.i(TAG, "video cover shown");
     }
 
-    private void hideVideoCover() {
+    void hideVideoCover() {
         if (wallpaperTransitionLayer == null || transitionNew == null) {
             return;
         }
@@ -1964,7 +1241,7 @@ public class LauncherActivity extends Activity {
                 }
             }
             if (!backgroundItems.isEmpty()) {
-                int idx = Math.max(backgroundIndex, 0) % backgroundItems.size();
+                int idx = Math.max(slideshow.currentIndex(), 0) % backgroundItems.size();
                 return loadBackground(backgroundItems.get(idx));
             }
         } catch (Throwable t) {
@@ -1973,10 +1250,29 @@ public class LauncherActivity extends Activity {
         return null;
     }
 
-    private void maybeHide4KUiCover() {
-        if (fourKStaticMode && fourKUiAnimationDone && fourKVideoReady) {
+    void maybeHide4KUiCover() {
+        if (fourKStatic.isMode() && fourKStatic.isUiAnimationDone()
+                && fourKStatic.isReady()) {
             hide4KUiCover();
         }
+    }
+
+    /** 首帧或预览图就绪后移除启动黑幕，并触发后台应用扫描 */
+    void revealStartupFromBlack() {
+        if (startupRevealed || startupBlackout == null) {
+            return;
+        }
+        startupRevealed = true;
+        startupBlackout.animate().cancel();
+        startupBlackout.setAlpha(0f);
+        startupBlackout.setVisibility(View.GONE);
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                loadAppsDeferred();
+            }
+        }, 300);
+        Log.i(TAG, "startup blackout removed (no fade)");
     }
 
     /** 无动画硬切：直接移除 UI 覆盖层，露出已经稳定显示的 4K 视频帧 */
@@ -1998,110 +1294,11 @@ public class LauncherActivity extends Activity {
         Log.i(TAG, "4K UI cover hidden (hard cut)");
         revealStartupFromBlack();
         // 画面已经清晰，趁空闲把下一张预编码好，用户切过去时可直接命中缓存
-        prefetchNext4KStatic();
+        fourKStatic.prefetch();
     }
 
-    /** 后台预编码下一张 4K 壁纸；与按需编码共用 fourKEncoding 标记，保证同一时刻只有一个编码任务 */
-    private void prefetchNext4KStatic() {
-        if (!fourKStaticMode || fourKEncoding || !x264Available || fourKItems.size() < 2) {
-            return;
-        }
-        final BackgroundItem item = fourKItems.get((fourKIndex + 1) % fourKItems.size());
-        final File cache = fourKCacheFile(item);
-        if (cache.exists() && cache.length() > 0) {
-            return;
-        }
-        fourKEncoding = true;
-        Log.i(TAG, "prefetch 4K wallpaper: " + item.name);
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                boolean ok = false;
-                try {
-                    int[] target = targetSizeFor(item);
-                    if (target != null) {
-                        Bitmap source = decode4KBitmap(item, target[0], target[1]);
-                        if (source != null) {
-                            byte[] yuv = bitmapToI420(source, target[0], target[1]);
-                            source.recycle();
-                            byte[] data = encodeI4204K(yuv, target[0], target[1], FOUR_K_ENCODE_FRAMES);
-                            if (data != null) {
-                                write4KMp4(cache, data, target[0], target[1]);
-                                ok = true;
-                            }
-                        }
-                    }
-                } catch (Throwable t) {
-                    Log.w(TAG, "prefetch 4K wallpaper failed", t);
-                    cache.delete();
-                }
-                final boolean success = ok;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (isDestroyed()) {
-                            return;
-                        }
-                        fourKEncoding = false;
-                        if (!fourKStaticMode) {
-                            return;
-                        }
-                        BackgroundItem current = (fourKIndex >= 0 && fourKIndex < fourKItems.size())
-                                ? fourKItems.get(fourKIndex) : null;
-                        if (success && current != null && current.name.equals(item.name)) {
-                            // 用户已经切到这张：直接播，省掉一次防抖等待
-                            handler.removeCallbacks(fourKVideoStart);
-                            Log.i(TAG, "prefetch hit current wallpaper: " + item.name);
-                            play4KStatic(cache);
-                            return;
-                        }
-                        if (fourKEncodeQueued) {
-                            fourKEncodeQueued = false;
-                            schedule4KVideoStart();
-                        }
-                    }
-                });
-            }
-        }, "4k-wallpaper-prefetch").start();
-    }
-
-    private void revealStartupFromBlack() {
-        if (startupRevealed || startupBlackout == null) {
-            return;
-        }
-        startupRevealed = true;
-        startupBlackout.animate().cancel();
-        startupBlackout.setAlpha(0f);
-        startupBlackout.setVisibility(View.GONE);
-        handler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                loadAppsDeferred();
-            }
-        }, 300);
-        Log.i(TAG, "startup blackout removed (no fade)");
-    }
-
-    private void stop4KStatic() {
-        handler.removeCallbacks(fourKVideoStart);
-        fourKPlayToken++;
-        fourKUiAnimationDone = false;
-        fourKVideoReady = false;
-        fourKPreparing = false;
-        fourKSurfaceReplayCount = 0;
-        if (wallpaperVideo != null) {
-            wallpaperVideo.stopPlayback();
-            wallpaperVideo.setVisibility(View.GONE);
-        }
-        if (wallpaperTransitionLayer != null) {
-            wallpaperTransitionLayer.setVisibility(View.GONE);
-            transitionOld.setImageDrawable(null);
-            transitionNew.setImageDrawable(null);
-        }
-    }
-
-    /** 按中心裁切后的 16:9 源尺寸编码，最高 4K；低清源不放大 */
-    private int[] targetSizeFor(BackgroundItem item) {
+    /** 后台预编码下一张 4K 壁纸；由 FourKStaticPlayer 保证同一时刻只有一个编码任务 */
+    int[] targetSizeFor(BackgroundItem item) {
         if (readImageBounds(item) == null) {
             return null;
         }
@@ -2110,7 +1307,7 @@ public class LauncherActivity extends Activity {
         return new int[]{FOUR_K_W, FOUR_K_H};
     }
 
-    private Bitmap decode4KBitmap(BackgroundItem item, int targetW, int targetH) {
+    Bitmap decode4KBitmap(BackgroundItem item, int targetW, int targetH) {
         int[] bounds = readImageBounds(item);
         if (bounds == null) {
             return null;
@@ -2149,7 +1346,7 @@ public class LauncherActivity extends Activity {
     }
 
     /** 读图片尺寸；文件壁纸和 APK 内置壁纸都支持，失败返回 null */
-    private int[] readImageBounds(BackgroundItem item) {
+    int[] readImageBounds(BackgroundItem item) {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         if (item.assetName != null) {
@@ -2172,7 +1369,7 @@ public class LauncherActivity extends Activity {
         return new int[]{bounds.outWidth, bounds.outHeight};
     }
 
-    private Bitmap decodeImage(BackgroundItem item, BitmapFactory.Options options) {
+    Bitmap decodeImage(BackgroundItem item, BitmapFactory.Options options) {
         if (item.assetName != null) {
             InputStream in = null;
             try {
@@ -2188,7 +1385,7 @@ public class LauncherActivity extends Activity {
         return BitmapFactory.decodeFile(item.filePath, options);
     }
 
-    private static byte[] bitmapToI420(Bitmap bitmap, int width, int height) {
+    static byte[] bitmapToI420(Bitmap bitmap, int width, int height) {
         byte[] yuv = new byte[width * height * 3 / 2];
         int[] row = new int[width];
         int uOff = width * height;
@@ -2223,7 +1420,7 @@ public class LauncherActivity extends Activity {
         return value;
     }
 
-    private static void write4KMp4(File file, byte[] data, int width, int height) throws IOException {
+    static void write4KMp4(File file, byte[] data, int width, int height) throws IOException {
         ByteBuffer bb = ByteBuffer.wrap(data);
         int spsLen = bb.getInt();
         byte[] sps = new byte[spsLen];
@@ -2307,20 +1504,20 @@ public class LauncherActivity extends Activity {
 
     private void loadPlaybackSettings() {
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
-        slideshowEnabled = sp.getBoolean(KEY_SLIDESHOW, false);
-        slideshowIntervalSec = sp.getInt(KEY_SLIDESHOW_SEC, 30);
-        slideshowFade = sp.getBoolean(KEY_SLIDESHOW_FADE, true);
-        slideshowRandom = sp.getBoolean(KEY_SLIDESHOW_RANDOM, false);
-        videoMuted = sp.getBoolean(KEY_VIDEO_MUTED, true);
+        slideshow.setEnabled(sp.getBoolean(KEY_SLIDESHOW, false));
+        slideshow.setIntervalSec(sp.getInt(KEY_SLIDESHOW_SEC, 30));
+        slideshow.setFade(sp.getBoolean(KEY_SLIDESHOW_FADE, true));
+        slideshow.setRandom(sp.getBoolean(KEY_SLIDESHOW_RANDOM, false));
+        videoPlayer.setMuted(sp.getBoolean(KEY_VIDEO_MUTED, true));
     }
 
     private void savePlaybackSettings() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putBoolean(KEY_SLIDESHOW, slideshowEnabled)
-                .putInt(KEY_SLIDESHOW_SEC, slideshowIntervalSec)
-                .putBoolean(KEY_SLIDESHOW_FADE, slideshowFade)
-                .putBoolean(KEY_SLIDESHOW_RANDOM, slideshowRandom)
-                .putBoolean(KEY_VIDEO_MUTED, videoMuted)
+                .putBoolean(KEY_SLIDESHOW, slideshow.isEnabled())
+                .putInt(KEY_SLIDESHOW_SEC, slideshow.getIntervalSec())
+                .putBoolean(KEY_SLIDESHOW_FADE, slideshow.isFade())
+                .putBoolean(KEY_SLIDESHOW_RANDOM, slideshow.isRandom())
+                .putBoolean(KEY_VIDEO_MUTED, videoPlayer.isMuted())
                 .apply();
     }
 
@@ -2428,11 +1625,11 @@ public class LauncherActivity extends Activity {
                 });
         box.addView(row4k, settingsRowLp());
 
-        LinearLayout rowSlide = makeSettingsRow("幻灯片播放", slideshowEnabled,
+        LinearLayout rowSlide = makeSettingsRow("幻灯片播放", slideshow.isEnabled(),
                 new android.widget.CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                        slideshowEnabled = isChecked;
+                        slideshow.setEnabled(isChecked);
                         savePlaybackSettings();
                         resetBgTimer();
                         Log.i(TAG, "slideshow = " + isChecked);
@@ -2459,7 +1656,7 @@ public class LauncherActivity extends Activity {
         final Runnable refreshInterval = new Runnable() {
             @Override
             public void run() {
-                intervalValue.setText(intervalLabel(slideshowIntervalSec));
+                intervalValue.setText(intervalLabel(slideshow.getIntervalSec()));
             }
         };
         refreshInterval.run();
@@ -2514,7 +1711,7 @@ public class LauncherActivity extends Activity {
         final Runnable refreshOrder = new Runnable() {
             @Override
             public void run() {
-                orderValue.setText(slideshowRandom ? "随机" : "顺序");
+                orderValue.setText(slideshow.isRandom() ? "随机" : "顺序");
             }
         };
         refreshOrder.run();
@@ -2535,7 +1732,7 @@ public class LauncherActivity extends Activity {
                         && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
                     return false;
                 }
-                slideshowRandom = !slideshowRandom;
+                slideshow.setRandom(!slideshow.isRandom());
                 savePlaybackSettings();
                 refreshOrder.run();
                 return true;
@@ -2544,37 +1741,30 @@ public class LauncherActivity extends Activity {
         rowOrder.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                slideshowRandom = !slideshowRandom;
+                slideshow.setRandom(!slideshow.isRandom());
                 savePlaybackSettings();
                 refreshOrder.run();
             }
         });
         box.addView(rowOrder, settingsRowLp());
 
-        LinearLayout rowFade = makeSettingsRow("切换特效", slideshowFade,
+        LinearLayout rowFade = makeSettingsRow("切换特效", slideshow.isFade(),
                 new android.widget.CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                        slideshowFade = isChecked;
+                        slideshow.setFade(isChecked);
                         savePlaybackSettings();
                         Log.i(TAG, "slideshow fade = " + isChecked);
                     }
                 });
         box.addView(rowFade, settingsRowLp());
 
-        LinearLayout rowMute = makeSettingsRow("动态壁纸静音", videoMuted,
+        LinearLayout rowMute = makeSettingsRow("动态壁纸静音", videoPlayer.isMuted(),
                 new android.widget.CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                        videoMuted = isChecked;
+                        videoPlayer.setMuted(isChecked);
                         savePlaybackSettings();
-                        if (videoPlayerRef != null) {
-                            float volume = isChecked ? 0f : 1f;
-                            try {
-                                videoPlayerRef.setVolume(volume, volume);
-                            } catch (Throwable ignored) {
-                            }
-                        }
                     }
                 });
         box.addView(rowMute, settingsRowLp());
@@ -2612,16 +1802,16 @@ public class LauncherActivity extends Activity {
     private void stepSlideshowInterval(int delta) {
         int index = 0;
         for (int i = 0; i < SLIDESHOW_STEPS.length; i++) {
-            if (SLIDESHOW_STEPS[i] == slideshowIntervalSec) {
+            if (SLIDESHOW_STEPS[i] == slideshow.getIntervalSec()) {
                 index = i;
                 break;
             }
         }
         index = (index + delta + SLIDESHOW_STEPS.length) % SLIDESHOW_STEPS.length;
-        slideshowIntervalSec = SLIDESHOW_STEPS[index];
+        slideshow.setIntervalSec(SLIDESHOW_STEPS[index]);
         savePlaybackSettings();
         resetBgTimer();
-        Log.i(TAG, "slideshow interval = " + slideshowIntervalSec + "s");
+        Log.i(TAG, "slideshow interval = " + slideshow.getIntervalSec() + "s");
     }
 
     void switchWallpaperBy(int direction) {
@@ -2647,18 +1837,7 @@ public class LauncherActivity extends Activity {
         menu.hideImmediately();
         // 管理页完全盖住桌面，视频看不见；先暂停解码，
         // 避免导入大文件时解码器和磁盘写入、媒体扫描抢资源导致卡死。
-        if (videoWallpaperMode && wallpaperVideo != null) {
-            handler.removeCallbacks(videoHealthTick);
-            try {
-                if (wallpaperVideo.isPlaying()) {
-                    wallpaperVideo.pause();
-                    videoPausedByManager = true;
-                    Log.i(TAG, "manager opened, video wallpaper paused");
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "pause video on manager open failed: " + t);
-            }
-        }
+        videoPlayer.pauseForOverlay();
         reloadBackgrounds();
         reload4KBackgrounds();
         reloadVideoBackgrounds();
@@ -2688,26 +1867,7 @@ public class LauncherActivity extends Activity {
         focusFirstDockItem();
         // 管理页只是盖在桌面上：surface 还在就从暂停位置续播；
         // 只有 surface 真的被销毁（或播放器已不在）时才需要重新 prepare。
-        if (videoWallpaperMode) {
-            if (videoSurfaceLost || videoPlayerRef == null) {
-                Log.i(TAG, "manager closed, surface lost, re-prepare video wallpaper");
-                refreshVideoWallpaperMode();
-            } else if (videoPausedByManager || videoResumePending) {
-                videoResumePending = false;
-                try {
-                    wallpaperVideo.start();
-                    videoWallpaperReady = true;
-                    handler.removeCallbacks(videoHealthTick);
-                    handler.postDelayed(videoHealthTick, 5000);
-                    Log.i(TAG, "manager closed, video wallpaper resumed");
-                } catch (Throwable t) {
-                    Log.w(TAG, "resume video on manager close failed: " + t);
-                    refreshVideoWallpaperMode();
-                }
-            }
-        }
-        videoPausedByManager = false;
-        videoResumePending = false;
+        videoPlayer.resumeAfterOverlay();
         resetWidgetAutoHide();
     }
 
@@ -2916,6 +2076,107 @@ public class LauncherActivity extends Activity {
                 .setInterpolator(target == 0f ? CLOSE_EASE : OPEN_EASE).start();
     }
 
+    // ---------- 4K 静态播放器（FourKStaticPlayer）宿主 ----------
+
+    boolean isVideoWallpaperMode() {
+        return videoWallpaperMode;
+    }
+
+    void setVideoSurfaceLost(boolean lost) {
+        videoSurfaceLost = lost;
+    }
+
+    VideoView wallpaperVideoView() {
+        return wallpaperVideo;
+    }
+
+    ImageView bgFrontView() {
+        return bgFront;
+    }
+
+    ImageView bgBackView() {
+        return bgBack;
+    }
+
+    FrameLayout transitionLayerView() {
+        return wallpaperTransitionLayer;
+    }
+
+    ImageView transitionOldView() {
+        return transitionOld;
+    }
+
+    ImageView transitionNewView() {
+        return transitionNew;
+    }
+
+    // ---------- 动态视频播放器（VideoWallpaperPlayer）宿主 ----------
+
+    int videoItemCount() {
+        return videoItems.size();
+    }
+
+    BackgroundItem videoItemAt(int index) {
+        return videoItems.get(index);
+    }
+
+    int currentVideoIndex() {
+        return videoIndex;
+    }
+
+    void setCurrentVideoIndex(int index) {
+        videoIndex = index;
+    }
+
+    void setCurrentVideoName(String name) {
+        currentVideoName = name;
+    }
+
+    void persistVideoWallpaper(String name) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_VIDEO_BACKGROUND, name)
+                .putString(KEY_WALLPAPER_TYPE, TYPE_VIDEO).apply();
+    }
+
+    /** 视频播放期间停掉 1080p 幻灯片计时，避免两套壁纸管线抢占 */
+    void pauseSlideshowForVideo() {
+        slideshow.stopTimer();
+    }
+
+    /** 播放视频前关闭 4K 静态管线 */
+    void stopFourKForVideo() {
+        fourKStatic.setMode(false);
+        fourKStatic.reset();
+        fourKStatic.stop();
+    }
+
+    /** 视频首帧稳定后，允许 4K/视频共用的过渡层收起 */
+    void markFourKVideoReady() {
+        fourKStatic.markReady();
+        maybeHide4KUiCover();
+    }
+
+    /** 视频播放失败/卡死兜底：退回图片模式 */
+    void onVideoFallbackToImage(boolean notifyUser) {
+        videoWallpaperMode = false;
+        stopVideoWallpaper();
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
+        refresh4KStaticMode();
+        if (notifyUser) {
+            Toast.makeText(this, "视频壁纸播放异常，已恢复静态壁纸",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    boolean isUiForeground() {
+        return uiForeground;
+    }
+
+    boolean isVideoSurfaceLost() {
+        return videoSurfaceLost;
+    }
+
     /** 远程页进入全屏：挡住下层焦点，并保持亮屏 */
     void remotePageEnterFullscreen() {
         // 远程页在最上层，必须挡住管理页/桌面的焦点，否则遥控器会点到下面的网格
@@ -2944,7 +2205,8 @@ public class LauncherActivity extends Activity {
             }
             focusFirstDockItem();
             // 传输期间为导入让路而暂停的视频，回到桌面后从原位置续播
-            if (videoWallpaperMode && (videoPausedByTransfer || videoResumePending)) {
+            if (videoWallpaperMode
+                && (videoPlayer.isPausedForTransfer() || videoPlayer.isResumePending())) {
                 resumeVideoAfterTransfer();
             }
         }
@@ -3063,22 +2325,7 @@ public class LauncherActivity extends Activity {
         callOnUi(new Callable<Void>() {
             @Override
             public Void call() {
-                videoTransferCount++;
-                // 页面盖着桌面时视频本来就已经暂停了，不需要再动；
-                // 只有人在桌面、视频正在播时，才为导入让路暂停解码。
-                if (videoTransferCount == 1 && videoWallpaperMode && wallpaperVideo != null
-                        && !isManagerOpen() && !isRemoteOpen()) {
-                    try {
-                        if (wallpaperVideo.isPlaying()) {
-                            wallpaperVideo.pause();
-                            videoPausedByTransfer = true;
-                            handler.removeCallbacks(videoHealthTick);
-                            Log.i(TAG, "remote transfer started, video wallpaper paused");
-                        }
-                    } catch (Throwable t) {
-                        Log.w(TAG, "pause video for transfer failed: " + t);
-                    }
-                }
+                videoPlayer.beginTransfer();
                 return null;
             }
         }, 3000);
@@ -3088,20 +2335,7 @@ public class LauncherActivity extends Activity {
         callOnUi(new Callable<Void>() {
             @Override
             public Void call() {
-                if (videoTransferCount > 0) {
-                    videoTransferCount--;
-                }
-                if (videoTransferCount > 0 || !videoPausedByTransfer) {
-                    return null;
-                }
-                videoPausedByTransfer = false;
-                if (isManagerOpen() || isRemoteOpen() || !uiForeground) {
-                    // 传输结束时页面还开着、或桌面不在前台：等回到桌面后再续播
-                    videoResumePending = true;
-                    Log.i(TAG, "remote transfer done, resume later");
-                    return null;
-                }
-                resumeVideoAfterTransfer();
+                videoPlayer.endTransfer();
                 return null;
             }
         }, 3000);
@@ -3519,10 +2753,9 @@ public class LauncherActivity extends Activity {
                 .putString(KEY_4K_BACKGROUND, name)
                 .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
         if (fourKStaticEnabled()) {
-            fourKEncodeToken++;
-            fourKEncoding = false;
-            invalidate4KPlayback();
-            if (!fourKStaticMode) {
+            fourKStatic.resetEncoding();
+            fourKStatic.invalidate();
+            if (!fourKStatic.isMode()) {
                 // 刚离开视频模式：重新进 4K 静态模式（会按新的 current4KName 显示）
                 refresh4KStaticMode();
             } else {
@@ -3620,12 +2853,9 @@ public class LauncherActivity extends Activity {
         reload4KBackgrounds();
         reloadBackgrounds();
         if (wasCurrent && !wasVideoMode) {
-            fourKStaticMode = false;
-            fourKEncoding = false;
-            fourKEncodeToken++;
-            fourKVideoReady = false;
-            fourKPreparing = false;
-            stop4KStatic();
+            fourKStatic.setMode(false);
+            fourKStatic.reset();
+            fourKStatic.stop();
             clearWallpaperToBlack();
             Toast.makeText(this, "已删除当前壁纸，桌面已置黑", Toast.LENGTH_SHORT).show();
         } else {
@@ -3662,17 +2892,14 @@ public class LauncherActivity extends Activity {
             videoIndex = -1;
             current4KName = null;
             fourKIndex = -1;
-            fourKStaticMode = false;
-            fourKEncoding = false;
-            fourKEncodeToken++;
-            fourKVideoReady = false;
-            fourKPreparing = false;
+            fourKStatic.setMode(false);
+            fourKStatic.reset();
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .remove(KEY_VIDEO_BACKGROUND)
                     .remove(KEY_4K_BACKGROUND)
                     .putString(KEY_WALLPAPER_TYPE, TYPE_IMAGE).apply();
             reloadVideoBackgrounds();
-            stop4KStatic();
+            fourKStatic.stop();
             clearWallpaperToBlack();
             Toast.makeText(this, "已删除当前壁纸，桌面已置黑", Toast.LENGTH_SHORT).show();
         } else {
@@ -4272,26 +3499,45 @@ public class LauncherActivity extends Activity {
         return dest.getName();
     }
 
-    // ---------- 背景轮播 ----------
+    // ---------- 背景轮播（SlideshowController）宿主 ----------
 
-    private final Runnable bgTick = new Runnable() {
-        @Override
-        public void run() {
-            bgTickScheduled = false;
-            if (!slideshowEnabled || videoWallpaperMode) {
-                return;
-            }
-            if (fourKStaticEnabled()) {
-                if (fourKItems.size() > 1) {
-                    switch4KStatic(1, slideshowRandom);
-                }
-            } else if (backgroundItems.size() > 1) {
-                advanceBackground(1, slideshowRandom);
-            }
-            bgTickScheduled = true;
-            handler.postDelayed(this, slideshowIntervalSec * 1000L);
-        }
-    };
+    private void showBackgroundImmediately(int index) {
+        slideshow.showImmediately(index);
+    }
+
+    private void advanceBackground(int delta) {
+        slideshow.advance(delta);
+    }
+
+    private void advanceBackground(int delta, boolean random) {
+        slideshow.advance(delta, random);
+    }
+
+    private void preloadNextBackground() {
+        slideshow.preloadNext();
+    }
+
+    private void resetBgTimer() {
+        slideshow.resetTimer();
+    }
+
+    private void ensureBgTimer() {
+        slideshow.ensureTimer();
+    }
+
+    List<BackgroundItem> backgroundItems() {
+        return backgroundItems;
+    }
+
+    /** 交叉淡化后交换前后两层，下一张继续从 bgBack 进来 */
+    void swapBackgroundViews(ImageView front, ImageView back) {
+        bgFront = front;
+        bgBack = back;
+    }
+
+    void invalidateWallpaperBlur() {
+        wallpaperBlurKey = null;
+    }
 
     /**
      * 优先读设备外部目录（/sdcard/Android/data/cn.rainynight.dream/files/backgrounds），
@@ -4308,13 +3554,13 @@ public class LauncherActivity extends Activity {
             return;
         }
 
-        String keep = currentBackgroundName;
+        String keep = slideshow.currentName();
         backgroundItems.clear();
         backgroundItems.addAll(found);
         // 列表变了，之前预解码的那张作废
-        bgPreloadBitmap = null;
-        bgPreloadKey = null;
-        bgPreloadIndex = -1;
+        slideshow.invalidatePreload();
+        
+        
 
         int index = 0;
         if (keep != null) {
@@ -4328,8 +3574,8 @@ public class LauncherActivity extends Activity {
         showBackgroundImmediately(index);
         if (isWallpaperCleared()) {
             // 「删掉当前壁纸」的黑屏状态：列表照常刷新，但不重新铺图、不启轮播
-            currentBackgroundName = null;
-            backgroundIndex = -1;
+            slideshow.clearCurrent();
+            
             clearWallpaperToBlack();
             return;
         }
@@ -4371,46 +3617,8 @@ public class LauncherActivity extends Activity {
         return items;
     }
 
-    private void showBackgroundImmediately(int index) {
-        if (isWallpaperCleared()) {
-            clearWallpaperToBlack();
-            return;
-        }
-        bgSwitching = false;
-        bgFront.animate().cancel();
-        bgBack.animate().cancel();
-        bgBack.setAlpha(0f);
-
-        if (backgroundItems.isEmpty()) {
-            showBuiltinFallback();
-            backgroundIndex = -1;
-            currentBackgroundName = null;
-            wallpaperBlurKey = null;
-            return;
-        }
-        if (index < 0 || index >= backgroundItems.size()) {
-            index = 0;
-        }
-        BackgroundItem item = backgroundItems.get(index);
-        Bitmap bitmap = loadBackground(item);
-        if (bitmap == null) {
-            showBuiltinFallback();
-            backgroundIndex = -1;
-            currentBackgroundName = null;
-            wallpaperBlurKey = null;
-            return;
-        }
-        bgFront.setImageBitmap(bitmap);
-        bgFront.setAlpha(1f);
-        backgroundIndex = index;
-        currentBackgroundName = item.name;
-        wallpaperBlurKey = null;
-        preloadNextBackground();
-        precomputeWallpaperBlur();
-    }
-
     /** 列表为空或解码失败时的最后兜底：直接画内置壁纸，连它都读不出来才用深色底 */
-    private void showBuiltinFallback() {
+    void showBuiltinFallback() {
         Bitmap bitmap = loadBackground(BUILTIN_ITEM);
         bgFront.setImageDrawable(null);
         if (bitmap != null) {
@@ -4422,7 +3630,7 @@ public class LauncherActivity extends Activity {
         bgFront.setAlpha(1f);
     }
 
-    private Bitmap loadBackground(BackgroundItem item) {
+    Bitmap loadBackground(BackgroundItem item) {
         if (item.assetName != null) {
             return loadAsset(item.assetName);
         }
@@ -4514,128 +3722,12 @@ public class LauncherActivity extends Activity {
     }
 
     /** 自动轮播：两张图交叉淡入淡出，避免直接闪切 */
-    private void advanceBackground(int delta) {
-        advanceBackground(delta, false);
-    }
-
-    /** random=true 时随机挑一张（不重复当前），用于「播放顺序=随机」 */
-    private void advanceBackground(int delta, boolean random) {
-        if (isWallpaperCleared()
-                || fourKStaticEnabled() || backgroundItems.size() < 2 || bgSwitching) {
-            return;
-        }
-        int size = backgroundItems.size();
-        int next;
-        if (backgroundIndex < 0) {
-            next = random ? new java.util.Random().nextInt(size)
-                    : (delta > 0 ? 0 : size - 1);
-        } else if (random) {
-            next = new java.util.Random().nextInt(size - 1);
-            if (next >= backgroundIndex) {
-                next++;
-            }
-        } else {
-            next = (backgroundIndex + delta + size) % size;
-        }
-        if (next == backgroundIndex) {
-            return;
-        }
-
-        BackgroundItem item = backgroundItems.get(next);
-        Bitmap bitmap = null;
-        // 优先用后台预解码好的那张，避免在主线程解码大图造成卡顿
-        if (next == bgPreloadIndex && bgPreloadBitmap != null
-                && !bgPreloadBitmap.isRecycled()
-                && backgroundKey(item).equals(bgPreloadKey)) {
-            bitmap = bgPreloadBitmap;
-            bgPreloadBitmap = null;
-            bgPreloadIndex = -1;
-            bgPreloadKey = null;
-        }
-        if (bitmap == null) {
-            bitmap = loadBackground(item);
-        }
-        if (bitmap == null) {
-            return;
-        }
-
-        bgSwitching = true;
-        final ImageView incoming = bgBack;
-        final ImageView outgoing = bgFront;
-        incoming.setImageBitmap(bitmap);
-        if (slideshowFade) {
-            incoming.setAlpha(0f);
-            incoming.animate().alpha(1f).setDuration(BG_FADE_MS)
-                    .setInterpolator(BG_EASE).start();
-            outgoing.animate().alpha(0f).setDuration(BG_FADE_MS)
-                    .setInterpolator(BG_EASE)
-                    .withEndAction(new Runnable() {
-                        @Override
-                        public void run() {
-                            bgSwitching = false;
-                        }
-                    })
-                    .start();
-        } else {
-            incoming.setAlpha(1f);
-            outgoing.setAlpha(0f);
-            bgSwitching = false;
-        }
-
-        bgFront = incoming;
-        bgBack = outgoing;
-        backgroundIndex = next;
-        currentBackgroundName = item.name;
-        wallpaperBlurKey = null;
-        Log.i(TAG, "background -> " + item.name);
-        preloadNextBackground();
-        precomputeWallpaperBlur();
-    }
-
-    private String backgroundKey(BackgroundItem item) {
-        return item.name + "|" + item.stamp + "|" + item.assetName;
-    }
-
-    /** 后台预解码下一张 1080p 壁纸（轮播/左右键切换时直接淡入） */
-    private void preloadNextBackground() {
-        if (backgroundItems.size() < 2 || fourKStaticEnabled() || videoWallpaperMode) {
-            return;
-        }
-        int base = backgroundIndex < 0 ? 0 : backgroundIndex;
-        final int next = (base + 1) % backgroundItems.size();
-        final BackgroundItem item = backgroundItems.get(next);
-        final String key = backgroundKey(item);
-        if (key.equals(bgPreloadKey) && bgPreloadBitmap != null) {
-            return;
-        }
-        bgPreloadKey = key;
-        bgPreloadIndex = next;
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                final Bitmap bitmap = loadBackground(item);
-                if (bitmap == null) {
-                    return;
-                }
-                handler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (!key.equals(bgPreloadKey) || bgPreloadIndex != next) {
-                            return;
-                        }
-                        bgPreloadBitmap = bitmap;
-                    }
-                });
-            }
-        }, "bg-preload").start();
-    }
-
     /** 壁纸确定后提前把抽屉毛玻璃算好（截图在主线程，模糊在后台） */
-    private void precomputeWallpaperBlur() {
+    void precomputeWallpaperBlur() {
         if (fourKStaticEnabled() || videoWallpaperMode) {
             return;
         }
-        final String key = currentBackgroundName + "#" + backgroundIndex;
+        final String key = slideshow.currentName() + "#" + slideshow.currentIndex();
         if (key.equals(wallpaperBlurKey) && wallpaperBlurBitmap != null) {
             return;
         }
@@ -4645,7 +3737,7 @@ public class LauncherActivity extends Activity {
                 if (fourKStaticEnabled() || videoWallpaperMode) {
                     return;
                 }
-                if (!key.equals(currentBackgroundName + "#" + backgroundIndex)) {
+                if (!key.equals(slideshow.currentName() + "#" + slideshow.currentIndex())) {
                     return; // 期间已经换图
                 }
                 final Bitmap captured = captureWallpaperDisplayed();
@@ -4663,7 +3755,7 @@ public class LauncherActivity extends Activity {
                                 if (blurred == null) {
                                     return;
                                 }
-                                if (!key.equals(currentBackgroundName + "#" + backgroundIndex)) {
+                                if (!key.equals(slideshow.currentName() + "#" + slideshow.currentIndex())) {
                                     blurred.recycle();
                                     return;
                                 }
@@ -4696,7 +3788,7 @@ public class LauncherActivity extends Activity {
 
     /** 模糊壁纸缓存：整个屏幕只算一次，供抽屉毛玻璃使用 */
     private Bitmap getWallpaperBlur() {
-        String key = currentBackgroundName + "#" + backgroundIndex;
+        String key = slideshow.currentName() + "#" + slideshow.currentIndex();
         if (key.equals(wallpaperBlurKey) && wallpaperBlurBitmap != null) {
             return wallpaperBlurBitmap;
         }
@@ -4773,30 +3865,6 @@ public class LauncherActivity extends Activity {
             if (rs != null) {
                 rs.destroy();
             }
-        }
-    }
-
-    private void resetBgTimer() {
-        handler.removeCallbacks(bgTick);
-        bgTickScheduled = false;
-        if (!slideshowEnabled || videoWallpaperMode) {
-            return;
-        }
-        int count = fourKStaticEnabled() ? fourKItems.size() : backgroundItems.size();
-        if (count > 1) {
-            handler.postDelayed(bgTick, slideshowIntervalSec * 1000L);
-            bgTickScheduled = true;
-        }
-    }
-
-    /**
-     * 只保证计时器在跑，不打断已有的倒计时。
-     * 用在 onResume / 4K 模式刷新这类"可能已经排过队"的路径上，
-     * 否则频繁回到桌面会把 30 分钟的倒计时无限推迟。
-     */
-    private void ensureBgTimer() {
-        if (!bgTickScheduled) {
-            resetBgTimer();
         }
     }
 
@@ -5136,12 +4204,11 @@ public class LauncherActivity extends Activity {
         uiForeground = false;
         handler.removeCallbacks(clockTick);
         handler.removeCallbacks(weatherTick);
-        handler.removeCallbacks(bgTick);
-        bgTickScheduled = false;
+        slideshow.stopTimer();
         if (widgets != null) {
             widgets.pauseAutoHide();
         }
-        handler.removeCallbacks(videoHealthTick);
+        videoPlayer.pauseHealth();
         if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
             wallpaperVideo.pause();
         }
@@ -5158,7 +4225,7 @@ public class LauncherActivity extends Activity {
             remotePage.shutdown();
         }
         stopVideoWallpaper();
-        stop4KStatic();
+        fourKStatic.stop();
         // 清掉所有排队中的延时任务，避免它们继续持有已销毁的 Activity
         handler.removeCallbacksAndMessages(null);
     }
