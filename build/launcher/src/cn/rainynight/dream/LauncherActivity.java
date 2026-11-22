@@ -112,7 +112,7 @@ import org.json.JSONObject;
  */
 public class LauncherActivity extends Activity {
 
-    private static final String PREFS = "launcher_prefs";
+    static final String PREFS = "launcher_prefs";
     /** 旧格式（只有顺序、没有时间），仅用于升级迁移 */
     private static final String KEY_RECENT = "recent_components";
     /** 新格式：每行 "组件|最后打开时间(ms)" */
@@ -136,16 +136,10 @@ public class LauncherActivity extends Activity {
     static final String KEY_WIDGET_WALLPAPER_ARROWS = "widget_wallpaper_arrows";
     static final String KEY_WIDGET_DRAWER = "widget_drawer";
     /** 桌面控件显示方式：always 常驻 / hidden 隐藏 / auto 自动隐藏 */
-    private static final String KEY_WIDGET_MODE = "widget_mode";
+    static final String KEY_WIDGET_MODE = "widget_mode";
     static final String WIDGET_MODE_ALWAYS = "always";
     static final String WIDGET_MODE_HIDDEN = "hidden";
     static final String WIDGET_MODE_AUTO = "auto";
-    /** 自动隐藏：桌面空闲多久后收起控件 */
-    private static final long WIDGET_AUTO_HIDE_MS = 30 * 1000L;
-    /** 自动隐藏/恢复时控件的淡入淡出时长 */
-    private static final long WIDGET_FADE_MS = 260L;
-    /** 自动隐藏时控件向上位移的距离（dp），与淡出同步 */
-    private static final int WIDGET_FADE_OFFSET_DP = 12;
     /** 新视频启动后给 4K 视频 plane 的稳定时间，再开始 UI 层渐隐 */
     private static final long FRAME_SETTLE_MS = 1000L;
 
@@ -212,22 +206,22 @@ public class LauncherActivity extends Activity {
     private static final long OPEN_MS = 400;
     private static final long CLOSE_MS = 320;
     /** 菜单按钮 60×60dp；横条高度 = 按钮高度 + 上下内边距 */
-    private static final int MENU_ITEM_WIDTH_DP = 60;
-    private static final int MENU_ITEM_HEIGHT_DP = 60;
-    private static final int MENU_PADDING_V_DP = 6;
+    static final int MENU_ITEM_WIDTH_DP = 60;
+    static final int MENU_ITEM_HEIGHT_DP = 60;
+    static final int MENU_PADDING_V_DP = 6;
     /** 横条本体高度（按钮 + 上下等距留白） */
-    private static final int MENU_BAR_HEIGHT_DP = MENU_ITEM_HEIGHT_DP + MENU_PADDING_V_DP * 2;
+    static final int MENU_BAR_HEIGHT_DP = MENU_ITEM_HEIGHT_DP + MENU_PADDING_V_DP * 2;
     /** 底边浅色描边高度，画在横条下方，不占按钮下边距 */
-    private static final int MENU_BORDER_DP = 2;
+    static final int MENU_BORDER_DP = 2;
     /** 菜单模块总高度 = 横条 + 底部描边 */
-    private static final int MENU_HEIGHT_DP = MENU_BAR_HEIGHT_DP + MENU_BORDER_DP;
+    static final int MENU_HEIGHT_DP = MENU_BAR_HEIGHT_DP + MENU_BORDER_DP;
     /** 菜单左侧留白：上下边距的 2 倍（6dp → 12dp） */
-    private static final int MENU_PADDING_H_DP = MENU_PADDING_V_DP * 2;
-    private static final long MENU_ANIM_MS = 300;
+    static final int MENU_PADDING_H_DP = MENU_PADDING_V_DP * 2;
+    static final long MENU_ANIM_MS = 300;
     /** Material 标准缓动：进入减速、退出加速 */
-    private static final PathInterpolator OPEN_EASE =
+    static final PathInterpolator OPEN_EASE =
             new PathInterpolator(0.0f, 0.0f, 0.2f, 1.0f);
-    private static final PathInterpolator CLOSE_EASE =
+    static final PathInterpolator CLOSE_EASE =
             new PathInterpolator(0.4f, 0.0f, 1.0f, 1.0f);
     /** 背景切换的淡入淡出缓动 */
     private static final PathInterpolator BG_EASE =
@@ -245,7 +239,7 @@ public class LauncherActivity extends Activity {
 
     private static native byte[] encodeI4204K(byte[] yuv, int width, int height, int frames);
 
-    private static final class AppEntry {
+    static final class AppEntry {
         final String label;
         final ComponentName component;
         final Drawable icon;
@@ -276,28 +270,8 @@ public class LauncherActivity extends Activity {
     private ImageView drawerFrostView;
     private Bitmap wallpaperBlurBitmap;
     private String wallpaperBlurKey;
-    private LinearLayout dock;
-    private LinearLayout wallpaperControls;
-    private TextView wallpaperControlPrev;
-    private TextView wallpaperControlNext;
-    private LinearLayout clockBox;
-    private LinearLayout weatherBox;
-    /** 桌面控件开关；壁纸切换按钮默认关闭 */
-    private boolean widgetClock = true;
-    private boolean widgetWeather = true;
-    private boolean widgetDock = true;
-    private boolean widgetArrows = false;
-    private boolean widgetDrawer = true;
-    /** 当前显示方式：常驻 / 隐藏 / 自动隐藏 */
-    private String widgetMode = WIDGET_MODE_ALWAYS;
-    /** 自动隐藏模式下，空闲计时到点后置位，任意按键复位 */
-    private boolean widgetAutoHidden;
-    private TextView clockTime;
-    private TextView clockDate;
-    private TextView hintView;
-    private TextView weatherIcon;
-    private TextView weatherTemp;
-    private TextView weatherDesc;
+    /** 桌面控件层：时钟 / 天气 / Dock / 壁纸左右键 / 提示 */
+    private DesktopWidgets widgets;
     private ImageView bgFront;
     private ImageView bgBack;
     private VideoView wallpaperVideo;
@@ -451,9 +425,8 @@ public class LauncherActivity extends Activity {
     private boolean bgSwitching;
     /** bgTick 是否已经挂在 handler 上：避免重复排队，也避免被误删后不再续期 */
     private boolean bgTickScheduled;
-    private LinearLayout menuModule;
-    private LinearLayout menuBar;
-    private boolean menuOpen;
+    /** 顶部菜单条 */
+    private DesktopMenu menu;
     /** 从左右键打开菜单/抽屉时，关闭后把焦点还回去 */
     private boolean returnFocusToArrows;
 
@@ -536,13 +509,6 @@ public class LauncherActivity extends Activity {
                 .getBoolean(KEY_REVEAL_4K, true);
         iconSizePreset = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getString(KEY_ICON_SIZE, ICON_SIZE_MEDIUM);
-        SharedPreferences widgetPrefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        widgetClock = widgetPrefs.getBoolean(KEY_WIDGET_CLOCK, true);
-        widgetWeather = widgetPrefs.getBoolean(KEY_WIDGET_WEATHER, true);
-        widgetDock = widgetPrefs.getBoolean(KEY_WIDGET_DOCK, true);
-        widgetArrows = widgetPrefs.getBoolean(KEY_WIDGET_WALLPAPER_ARROWS, false);
-        widgetDrawer = widgetPrefs.getBoolean(KEY_WIDGET_DRAWER, true);
-        widgetMode = widgetPrefs.getString(KEY_WIDGET_MODE, WIDGET_MODE_ALWAYS);
 
         loadOpenTimes();
 
@@ -671,156 +637,10 @@ public class LauncherActivity extends Activity {
         scrim.setBackgroundColor(0x33000000);
         desktopModule.addView(scrim, matchParent());
 
-        // ---- 桌面层：时钟 + 底部最近使用 ----
-        homeLayer = new FrameLayout(this);
+        // ---- 桌面控件层：时钟 / 天气 / 底部 Dock / 壁纸左右键 / 提示 ----
+        widgets = new DesktopWidgets(this);
+        homeLayer = widgets.getLayer();
         desktopModule.addView(homeLayer, matchParent());
-
-        clockBox = new LinearLayout(this);
-        clockBox.setOrientation(LinearLayout.VERTICAL);
-        // 时钟不铺半透明底板，直接压在壁纸上；保留内边距以维持原来的文字位置
-        clockBox.setPadding(dp(26), dp(16), dp(26), dp(18));
-
-        clockTime = new TextView(this);
-        clockTime.setTextColor(Color.WHITE);
-        clockTime.setTextSize(TypedValue.COMPLEX_UNIT_SP, 52);
-        clockTime.setShadowLayer(9f, 0f, 3f, 0xCC000000);
-        clockTime.setSingleLine(true);
-        clockBox.addView(clockTime, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        clockDate = new TextView(this);
-        clockDate.setTextColor(0xFFE8EEF6);
-        clockDate.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        clockDate.setShadowLayer(6f, 0f, 2f, 0xCC000000);
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.topMargin = dp(2);
-        clockBox.addView(clockDate, dlp);
-
-        FrameLayout.LayoutParams clockLp = new FrameLayout.LayoutParams(
-                dp(330), ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.START);
-        clockLp.leftMargin = dp(56);
-        clockLp.topMargin = dp(44);
-        homeLayer.addView(clockBox, clockLp);
-
-        // ---- 右上天气：与时钟同一行，左右两端对齐 ----
-        weatherBox = new LinearLayout(this);
-        weatherBox.setOrientation(LinearLayout.VERTICAL);
-        weatherBox.setGravity(Gravity.END);
-
-        LinearLayout weatherRow = new LinearLayout(this);
-        weatherRow.setOrientation(LinearLayout.HORIZONTAL);
-        weatherRow.setGravity(Gravity.END | Gravity.BOTTOM);
-
-        weatherIcon = new TextView(this);
-        weatherIcon.setText("☁");
-        weatherIcon.setTextColor(0xFFE8EEF6);
-        weatherIcon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
-        weatherIcon.setShadowLayer(7f, 0f, 2f, 0xCC000000);
-        LinearLayout.LayoutParams weatherIconLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        weatherIconLp.rightMargin = dp(8);
-        weatherRow.addView(weatherIcon, weatherIconLp);
-
-        weatherTemp = new TextView(this);
-        weatherTemp.setText("--°");
-        weatherTemp.setTextColor(Color.WHITE);
-        weatherTemp.setTextSize(TypedValue.COMPLEX_UNIT_SP, 40);
-        weatherTemp.setShadowLayer(9f, 0f, 3f, 0xCC000000);
-        weatherTemp.setSingleLine(true);
-        weatherRow.addView(weatherTemp);
-
-        LinearLayout.LayoutParams weatherRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        weatherBox.addView(weatherRow, weatherRowLp);
-
-        weatherDesc = new TextView(this);
-        weatherDesc.setText("天气加载中…");
-        weatherDesc.setTextColor(0xFFE8EEF6);
-        weatherDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        weatherDesc.setShadowLayer(6f, 0f, 2f, 0xCC000000);
-        weatherDesc.setGravity(Gravity.END);
-        weatherDesc.setSingleLine(true);
-        LinearLayout.LayoutParams weatherDescLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        weatherDescLp.topMargin = dp(2);
-        weatherBox.addView(weatherDesc, weatherDescLp);
-
-        FrameLayout.LayoutParams weatherLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.END);
-        weatherLp.rightMargin = dp(56);
-        weatherLp.topMargin = dp(60); // 与时钟时间文字顶部对齐
-        homeLayer.addView(weatherBox, weatherLp);
-
-        // 底栏上方：壁纸左右切换控制行
-        wallpaperControls = new LinearLayout(this);
-        wallpaperControls.setOrientation(LinearLayout.HORIZONTAL);
-        wallpaperControls.setGravity(Gravity.START);
-        wallpaperControlPrev = makeWallpaperControl("◀", -1);
-        wallpaperControlNext = makeWallpaperControl("▶", 1);
-        wallpaperControls.addView(wallpaperControlPrev);
-        wallpaperControls.addView(wallpaperControlNext);
-
-        // 右箭头去掉右边距，使其右端与提示文字右端对齐
-        LinearLayout.LayoutParams nextLp = (LinearLayout.LayoutParams)
-                wallpaperControlNext.getLayoutParams();
-        nextLp.rightMargin = 0;
-
-        // 底部栏：左侧"最近使用"占满剩余宽度，右侧是「左右键 + 提示」竖排；
-        // 提示文字与 Dock 应用名称共用同一条底线。
-        LinearLayout bottomBar = new LinearLayout(this);
-        bottomBar.setOrientation(LinearLayout.HORIZONTAL);
-        bottomBar.setGravity(Gravity.BOTTOM);
-
-        dock = new LinearLayout(this);
-        dock.setOrientation(LinearLayout.HORIZONTAL);
-        dock.setGravity(Gravity.START | Gravity.BOTTOM);
-        LinearLayout.LayoutParams dockLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        bottomBar.addView(dock, dockLp);
-
-        hintView = new TextView(this);
-        hintView.setText("↓ 打开应用");
-        hintView.setTextColor(0xCCFFFFFF);
-        hintView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        hintView.setShadowLayer(6f, 0f, 2f, 0xCC000000);
-        hintView.setGravity(Gravity.END | Gravity.BOTTOM);
-        hintView.setPadding(0, 0, 0, 0);
-
-        LinearLayout rightColumn = new LinearLayout(this);
-        rightColumn.setOrientation(LinearLayout.VERTICAL);
-        rightColumn.setGravity(Gravity.END | Gravity.BOTTOM);
-
-        LinearLayout.LayoutParams controlsLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        controlsLp.leftMargin = dp(16);
-        // 提示文字改由 homeLayer 单独摆放，这里留出它原来的高度，左右键位置不变
-        controlsLp.bottomMargin = dp(20);
-        rightColumn.addView(wallpaperControls, controlsLp);
-
-        bottomBar.addView(rightColumn, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        FrameLayout.LayoutParams columnLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM);
-        columnLp.leftMargin = dp(30);
-        columnLp.rightMargin = dp(30);
-        columnLp.bottomMargin = dp(30);
-        homeLayer.addView(bottomBar, columnLp);
-
-        // 提示文字单独贴底：比底栏更低，靠近屏幕底部并留一点空隙
-        FrameLayout.LayoutParams hintLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.END);
-        hintLp.rightMargin = dp(30);
-        hintLp.bottomMargin = dp(12);
-        homeLayer.addView(hintView, hintLp);
-
-        // 按用户设置决定各桌面控件是否显示（壁纸切换按钮默认关闭）
-        applyWidgetVisibility();
 
         // ---- 抽屉层：应用网格 ----
         drawer = new FrameLayout(this);
@@ -895,32 +715,8 @@ public class LauncherActivity extends Activity {
         desktopModule.addView(drawer, matchParent());
 
         // ---- 顶部菜单模块：横条 + 底部浅色描边，整体从屏幕外挤入 ----
-        menuModule = new LinearLayout(this);
-        menuModule.setOrientation(LinearLayout.VERTICAL);
-        menuModule.setVisibility(View.GONE);
-        menuModule.setElevation(dp(8));
-
-        menuBar = new LinearLayout(this);
-        menuBar.setOrientation(LinearLayout.HORIZONTAL);
-        menuBar.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        menuBar.setBackgroundResource(R.drawable.menu_strip_bg);
-        menuBar.setPadding(dp(MENU_PADDING_H_DP), dp(MENU_PADDING_V_DP), dp(MENU_PADDING_H_DP), dp(MENU_PADDING_V_DP));
-
-        menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_gallery, "壁纸管理"));
-        menuBar.addView(makeMenuItem(android.R.drawable.ic_menu_manage, "桌面设置"));
-
-        menuModule.addView(menuBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(MENU_BAR_HEIGHT_DP)));
-
-        View menuLine = new View(this);
-        menuLine.setBackgroundColor(0xFFBDBDBD);
-        menuModule.addView(menuLine, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(MENU_BORDER_DP)));
-
-        FrameLayout.LayoutParams menuLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(MENU_HEIGHT_DP), Gravity.TOP);
-        root.addView(menuModule, menuLp);
-        menuModule.setTranslationY(-dp(MENU_HEIGHT_DP));
+        menu = new DesktopMenu(this);
+        root.addView(menu.getView(), menu.layoutParams());
 
         // 壁纸管理页：全屏浮层，盖住菜单和桌面
         wallpaperManager = new WallpaperManagerPage(this);
@@ -1876,13 +1672,7 @@ public class LauncherActivity extends Activity {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putBoolean(KEY_REVEAL_4K, enabled).apply();
         Log.i(TAG, "4K static wallpaper = " + enabled);
-        if (menuOpen && desktopModule != null) {
-            desktopModule.animate().cancel();
-            float target = shouldFloatMenu() ? 0f : dp(MENU_HEIGHT_DP);
-            desktopModule.animate().translationY(target)
-                    .setDuration(MENU_ANIM_MS)
-                    .setInterpolator(target == 0f ? CLOSE_EASE : OPEN_EASE).start();
-        }
+        relayoutDesktopForMenu();
         refresh4KStaticMode();
     }
 
@@ -2834,35 +2624,7 @@ public class LauncherActivity extends Activity {
         Log.i(TAG, "slideshow interval = " + slideshowIntervalSec + "s");
     }
 
-    private TextView makeWallpaperControl(String glyph, final int direction) {
-        TextView button = new TextView(this);
-        button.setText(glyph);
-        button.setTextColor(Color.WHITE);
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        button.setGravity(Gravity.CENTER);
-        button.setBackgroundResource(R.drawable.tile_bg);
-        button.setFocusable(true);
-        button.setFocusableInTouchMode(true);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(52), dp(52));
-        lp.rightMargin = dp(8);
-        button.setLayoutParams(lp);
-        button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus
-                        ? R.drawable.dock_focus : R.drawable.tile_bg);
-            }
-        });
-        button.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                switchWallpaperBy(direction);
-            }
-        });
-        return button;
-    }
-
-    private void switchWallpaperBy(int direction) {
+    void switchWallpaperBy(int direction) {
         if (videoWallpaperMode) {
             switchVideoBy(direction);
         } else if (fourKStaticEnabled()) {
@@ -2873,68 +2635,16 @@ public class LauncherActivity extends Activity {
         }
     }
 
-    private View makeMenuItem(int iconRes, final String label) {
-        LinearLayout item = new LinearLayout(this);
-        item.setOrientation(LinearLayout.VERTICAL);
-        item.setGravity(Gravity.CENTER);
-        item.setPadding(dp(4), dp(4), dp(4), dp(4));
-        item.setBackgroundResource(R.drawable.tile_bg);
-        item.setFocusable(true);
-        item.setFocusableInTouchMode(true);
-        item.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus
-                        ? R.drawable.dock_focus : R.drawable.tile_bg);
-            }
-        });
-        item.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if ("壁纸管理".equals(label)) {
-                    // 菜单直达壁纸管理页（播放设置在管理页里）
-                    openWallpaperManager();
-                } else if ("桌面设置".equals(label)) {
-                    openDesktopSettings();
-                } else {
-                    // 其它菜单项功能待实现
-                    Log.i(TAG, "menu item clicked: " + label + " (todo)");
-                }
-            }
-        });
-
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(iconRes);
-        icon.setColorFilter(0xFFF2F2F2);
-        item.addView(icon, new LinearLayout.LayoutParams(dp(28), dp(28)));
-
-        TextView text = new TextView(this);
-        text.setText(label);
-        text.setTextColor(0xFFF2F2F2);
-        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        text.setSingleLine(true);
-        LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        textLp.topMargin = dp(2);
-        item.addView(text, textLp);
-
-        LinearLayout.LayoutParams itemLp = new LinearLayout.LayoutParams(
-                dp(MENU_ITEM_WIDTH_DP), dp(MENU_ITEM_HEIGHT_DP));
-        itemLp.rightMargin = dp(8);
-        item.setLayoutParams(itemLp);
-        return item;
-    }
-
     private FrameLayout.LayoutParams matchParent() {
         return new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
     }
 
-    private void openWallpaperManager() {
+    void openWallpaperManager() {
         if (wallpaperManager == null || isManagerOpen()) {
             return;
         }
-        hideMenuImmediately();
+        menu.hideImmediately();
         // 管理页完全盖住桌面，视频看不见；先暂停解码，
         // 避免导入大文件时解码器和磁盘写入、媒体扫描抢资源导致卡死。
         if (videoWallpaperMode && wallpaperVideo != null) {
@@ -2955,9 +2665,7 @@ public class LauncherActivity extends Activity {
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
-        if (menuModule != null) {
-            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        }
+        menu.setFocusBlocked(true);
         wallpaperManager.open();
         pruneThumbCacheAsync();
         Log.i(TAG, "wallpaper manager opened, images=" + fourKItems.size()
@@ -2976,9 +2684,7 @@ public class LauncherActivity extends Activity {
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
-        if (menuModule != null) {
-            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
-        }
+        menu.setFocusBlocked(false);
         focusFirstDockItem();
         // 管理页只是盖在桌面上：surface 还在就从暂停位置续播；
         // 只有 surface 真的被销毁（或播放器已不在）时才需要重新 prepare。
@@ -3047,7 +2753,7 @@ public class LauncherActivity extends Activity {
 
     // ---------- 页面委托：DesktopSettingsPage / RemoteImportPage 只负责界面 ----------
 
-    private void openDesktopSettings() {
+    void openDesktopSettings() {
         settingsPage.open();
     }
 
@@ -3147,6 +2853,69 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    // ---------- 顶部菜单条（DesktopMenu）宿主 ----------
+
+    boolean isMenuOpen() {
+        return menu != null && menu.isOpen();
+    }
+
+    boolean isDrawerOpen() {
+        return drawerOpen;
+    }
+
+    /** 打开菜单/抽屉前记录焦点是否在左右箭头上 */
+    void rememberReturnFocus() {
+        returnFocusToArrows = widgets != null
+                && isFocusIn(widgets.getWallpaperControls());
+    }
+
+    /** 关闭菜单/抽屉后把焦点还回原处 */
+    void restoreReturnFocus() {
+        TextView prev = widgets == null ? null : widgets.getPrevControl();
+        if (returnFocusToArrows && prev != null) {
+            prev.requestFocus();
+        } else {
+            focusFirstDockItem();
+        }
+        returnFocusToArrows = false;
+    }
+
+    /** 菜单打开/关闭时把桌面整体下压或复位；4K 视频层露出时菜单悬浮、桌面不动 */
+    void setDesktopOffsetForMenu(boolean opening) {
+        if (desktopModule == null) {
+            return;
+        }
+        desktopModule.animate().cancel();
+        if (opening && !shouldFloatMenu()) {
+            desktopModule.animate().translationY(dp(MENU_HEIGHT_DP))
+                    .setDuration(MENU_ANIM_MS).setInterpolator(OPEN_EASE).start();
+        } else if (opening) {
+            desktopModule.setTranslationY(0f);
+        } else {
+            desktopModule.animate().translationY(0f)
+                    .setDuration(MENU_ANIM_MS).setInterpolator(CLOSE_EASE).start();
+        }
+    }
+
+    void resetDesktopOffsetForMenu() {
+        if (desktopModule != null) {
+            desktopModule.animate().cancel();
+            desktopModule.setTranslationY(0f);
+        }
+    }
+
+    /** 菜单开着时 4K 模式切换：重新计算桌面是否需要下压 */
+    private void relayoutDesktopForMenu() {
+        if (!isMenuOpen() || desktopModule == null) {
+            return;
+        }
+        desktopModule.animate().cancel();
+        float target = shouldFloatMenu() ? 0f : dp(MENU_HEIGHT_DP);
+        desktopModule.animate().translationY(target)
+                .setDuration(MENU_ANIM_MS)
+                .setInterpolator(target == 0f ? CLOSE_EASE : OPEN_EASE).start();
+    }
+
     /** 远程页进入全屏：挡住下层焦点，并保持亮屏 */
     void remotePageEnterFullscreen() {
         // 远程页在最上层，必须挡住管理页/桌面的焦点，否则遥控器会点到下面的网格
@@ -3157,9 +2926,7 @@ public class LauncherActivity extends Activity {
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
-        if (menuModule != null) {
-            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        }
+        menu.setFocusBlocked(true);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
@@ -3185,61 +2952,35 @@ public class LauncherActivity extends Activity {
     }
 
     void settingsEnterFullscreen() {
-        hideMenuImmediately();
+        menu.hideImmediately();
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
-        if (menuModule != null) {
-            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        }
+        menu.setFocusBlocked(true);
     }
 
     void settingsExitFullscreen() {
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
-        if (menuModule != null) {
-            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
-        }
+        menu.setFocusBlocked(false);
         focusFirstDockItem();
         resetWidgetAutoHide();
     }
 
     /** 桌面控件开关的当前值（供设置页初始化开关状态） */
     boolean widgetEnabled(String key) {
-        if (KEY_WIDGET_CLOCK.equals(key)) {
-            return widgetClock;
-        }
-        if (KEY_WIDGET_WEATHER.equals(key)) {
-            return widgetWeather;
-        }
-        if (KEY_WIDGET_DOCK.equals(key)) {
-            return widgetDock;
-        }
-        if (KEY_WIDGET_WALLPAPER_ARROWS.equals(key)) {
-            return widgetArrows;
-        }
-        return widgetDrawer;
+        return widgets != null && widgets.isEnabled(key);
     }
 
     void setWidgetEnabled(String key, boolean enabled) {
-        if (KEY_WIDGET_CLOCK.equals(key)) {
-            widgetClock = enabled;
-        } else if (KEY_WIDGET_WEATHER.equals(key)) {
-            widgetWeather = enabled;
-        } else if (KEY_WIDGET_DOCK.equals(key)) {
-            widgetDock = enabled;
-        } else if (KEY_WIDGET_WALLPAPER_ARROWS.equals(key)) {
-            widgetArrows = enabled;
-        } else if (KEY_WIDGET_DRAWER.equals(key)) {
-            widgetDrawer = enabled;
+        if (widgets != null) {
+            widgets.setEnabled(key, enabled);
         }
-        setWidgetFlag(key, enabled);
-        applyWidgetVisibility();
     }
 
     String widgetModeValue() {
-        return widgetMode;
+        return widgets == null ? WIDGET_MODE_ALWAYS : widgets.getMode();
     }
 
     String iconSizePreset() {
@@ -5070,9 +4811,9 @@ public class LauncherActivity extends Activity {
     };
 
     private void refreshClock() {
-        Date now = new Date();
-        clockTime.setText(new SimpleDateFormat("HH:mm", Locale.getDefault()).format(now));
-        clockDate.setText(new SimpleDateFormat("M月d日 EEEE", Locale.CHINA).format(now));
+        if (widgets != null) {
+            widgets.refreshClock();
+        }
     }
 
     // ---------- 天气 ----------
@@ -5138,25 +4879,9 @@ public class LauncherActivity extends Activity {
     }
 
     private void applyWeather(String temp, String condition, String place, String symbol) {
-        if (weatherTemp == null) {
-            return;
+        if (widgets != null) {
+            widgets.applyWeather(temp, condition, place, symbol);
         }
-        if (TextUtils.isEmpty(temp)) {
-            weatherTemp.setText("--°");
-            weatherIcon.setText("☁");
-            weatherDesc.setText("天气暂不可用");
-            return;
-        }
-        weatherTemp.setText(temp + "°");
-        weatherIcon.setText(symbol);
-        StringBuilder desc = new StringBuilder(condition);
-        if (!TextUtils.isEmpty(place)) {
-            if (desc.length() > 0) {
-                desc.append(" · ");
-            }
-            desc.append(place);
-        }
-        weatherDesc.setText(desc.length() == 0 ? "—" : desc.toString());
     }
 
     private static String cursorString(Cursor cursor, String column) {
@@ -5211,7 +4936,9 @@ public class LauncherActivity extends Activity {
         // 只续期、不重置：频繁回到桌面不应该把幻灯片倒计时无限推后
         ensureBgTimer();
         // 回到桌面先恢复控件显示，再重新开始自动隐藏计时
-        widgetAutoHidden = false;
+        if (widgets != null) {
+            widgets.resetAutoHidden();
+        }
         applyWidgetVisibility();
         resetWidgetAutoHide();
         // 从其它应用/应用商店回到桌面时，重新扫一遍应用列表：
@@ -5254,7 +4981,7 @@ public class LauncherActivity extends Activity {
                 && Intent.ACTION_MAIN.equals(intent.getAction())
                 && intent.hasCategory(Intent.CATEGORY_HOME);
         boolean homeOnDesktop = homePressed && !isRemoteOpen() && !isManagerOpen() && !isSettingsOpen()
-                && !menuOpen && !drawerOpen;
+                && !isMenuOpen() && !drawerOpen;
         if (homePressed) {
             if (isRemoteOpen()) {
                 closeRemoteImport();
@@ -5266,7 +4993,7 @@ public class LauncherActivity extends Activity {
                 closeDesktopSettings();
             }
         }
-        hideMenuImmediately();
+        menu.hideImmediately();
         reloadBackgrounds();
         reload4KBackgrounds();
         reloadVideoBackgrounds();
@@ -5331,7 +5058,7 @@ public class LauncherActivity extends Activity {
                         }
                         refreshDock();
                         if (getCurrentFocus() == null && !desktopFocusCleared
-                                && wallpaperControls != null) {
+                                && widgets != null) {
                             focusFirstDockItem();
                         }
                         Log.i(TAG, "deferred app scan done: " + allApps.size());
@@ -5411,7 +5138,9 @@ public class LauncherActivity extends Activity {
         handler.removeCallbacks(weatherTick);
         handler.removeCallbacks(bgTick);
         bgTickScheduled = false;
-        handler.removeCallbacks(widgetAutoHideTick);
+        if (widgets != null) {
+            widgets.pauseAutoHide();
+        }
         handler.removeCallbacks(videoHealthTick);
         if (wallpaperVideo != null && wallpaperVideo.isPlaying()) {
             wallpaperVideo.pause();
@@ -5419,7 +5148,7 @@ public class LauncherActivity extends Activity {
         // 注意：这里不能重置 4K 的 ready/preparing。桌面按 HOME 也会走一次 pause，
         // 一重置就会在 onNewIntent 里重新铺预览图 + 重播 4K（画面瞬间变糊再变清晰）。
         // 真正需要重播的场景（切到别的应用）会让 SurfaceView 销毁，那个在 surfaceDestroyed 里重置。
-        hideMenuImmediately();
+        menu.hideImmediately();
     }
 
     @Override
@@ -5437,9 +5166,9 @@ public class LauncherActivity extends Activity {
     // ---------- 抽屉 ----------
 
     private void openDrawer() {
-        if (drawerOpen || !widgetDrawer) return;
+        if (drawerOpen || widgets == null || !widgets.isDrawerEnabled()) return;
         drawerOpen = true;
-        returnFocusToArrows = wallpaperControls != null && isFocusIn(wallpaperControls);
+        rememberReturnFocus();
         prepareDrawerFrost();
         hideHomeLayer();
         drawer.setVisibility(View.VISIBLE);
@@ -5451,7 +5180,7 @@ public class LauncherActivity extends Activity {
         grid.setSelection(0);
     }
 
-    private void closeDrawer() {
+    void closeDrawer() {
         if (!drawerOpen) return;
         drawerOpen = false;
         homeLayer.setVisibility(View.VISIBLE);
@@ -5464,12 +5193,7 @@ public class LauncherActivity extends Activity {
                         showHomeLayer(0);
                     }
                 }).start();
-        if (returnFocusToArrows && wallpaperControlPrev != null) {
-            wallpaperControlPrev.requestFocus();
-        } else {
-            focusFirstDockItem();
-        }
-        returnFocusToArrows = false;
+        restoreReturnFocus();
         resetWidgetAutoHide();
     }
 
@@ -5479,7 +5203,7 @@ public class LauncherActivity extends Activity {
         if (keyCode == KeyEvent.KEYCODE_HOME) {
             // 已经在桌面（没有任何浮层/抽屉/菜单）时，HOME 只做取消选中
             boolean onDesktop = !isRemoteOpen() && !isManagerOpen() && !isSettingsOpen()
-                    && !menuOpen && !drawerOpen;
+                    && !isMenuOpen() && !drawerOpen;
             if (isRemoteOpen()) {
                 closeRemoteImport();
             }
@@ -5518,8 +5242,8 @@ public class LauncherActivity extends Activity {
             closeDesktopSettings();
             return;
         }
-        if (menuOpen) {
-            closeMenu();
+        if (isMenuOpen()) {
+            menu.close();
             return;
         }
         if (drawerOpen) {
@@ -5537,106 +5261,32 @@ public class LauncherActivity extends Activity {
         return videoWallpaperMode || fourKStaticEnabled();
     }
 
-    private void openMenu() {
-        if (menuModule == null || menuOpen || drawerOpen) {
-            return;
-        }
-        menuOpen = true;
-        returnFocusToArrows = wallpaperControls != null && isFocusIn(wallpaperControls);
-        // 4K 视频壁纸显示时菜单悬浮；否则桌面整体下移
-        if (desktopModule != null) {
-            desktopModule.animate().cancel();
-            if (shouldFloatMenu()) {
-                desktopModule.setTranslationY(0f);
-            } else {
-                desktopModule.animate().translationY(dp(MENU_HEIGHT_DP))
-                        .setDuration(MENU_ANIM_MS).setInterpolator(OPEN_EASE).start();
-            }
-        }
-        menuModule.animate().cancel();
-        menuModule.setVisibility(View.VISIBLE);
-        menuModule.setTranslationY(-dp(MENU_HEIGHT_DP));
-        menuModule.animate().translationY(0f).setDuration(MENU_ANIM_MS)
-                .setInterpolator(OPEN_EASE).start();
-
-        if (menuBar.getChildCount() > 0) {
-            menuBar.getChildAt(0).requestFocus();
-        }
-    }
-
-    private void closeMenu() {
-        if (menuModule == null || !menuOpen) {
-            return;
-        }
-        menuOpen = false;
-        menuModule.animate().cancel();
-        menuModule.animate().translationY(-dp(MENU_HEIGHT_DP))
-                .setDuration(MENU_ANIM_MS).setInterpolator(CLOSE_EASE)
-                .withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (menuOpen) {
-                            return;
-                        }
-                        menuModule.setVisibility(View.GONE);
-                        if (returnFocusToArrows && wallpaperControlPrev != null) {
-                            wallpaperControlPrev.requestFocus();
-                        } else {
-                            focusFirstDockItem();
-                        }
-                        returnFocusToArrows = false;
-                    }
-                }).start();
-
-        if (desktopModule != null) {
-            desktopModule.animate().cancel();
-            if (shouldFloatMenu()) {
-                desktopModule.setTranslationY(0f);
-            } else {
-                desktopModule.animate().translationY(0f)
-                        .setDuration(MENU_ANIM_MS).setInterpolator(CLOSE_EASE).start();
-            }
-        }
-        resetWidgetAutoHide();
-    }
-
-    private void hideMenuImmediately() {
-        menuOpen = false;
-        if (menuModule != null) {
-            menuModule.animate().cancel();
-            menuModule.setVisibility(View.GONE);
-            menuModule.setTranslationY(-dp(MENU_HEIGHT_DP));
-        }
-        if (desktopModule != null) {
-            desktopModule.animate().cancel();
-            desktopModule.setTranslationY(0f);
-        }
-    }
-
-
     /**
      * 底部焦点环：◀ ▶ 应用1 … 应用N，首尾相接。
      * 最左应用按左 → ▶；▶ 按左 → ◀；◀ 按左 → 最右应用；反向同理。
      */
     private boolean handleDockArrowRing(int key) {
-        if (wallpaperControls == null || dock == null || dock.getChildCount() == 0
-                || !widgetArrows || !widgetsShown()) {
+        if (widgets == null || !widgets.isArrowRingActive()) {
             return false;
         }
         View focused = getCurrentFocus();
         if (focused == null) {
             return false;
         }
-        if (isFocusIn(wallpaperControls)) {
+        LinearLayout controls = widgets.getWallpaperControls();
+        LinearLayout dock = widgets.getDock();
+        TextView prev = widgets.getPrevControl();
+        TextView next = widgets.getNextControl();
+        if (isFocusIn(controls)) {
             if (key == KeyEvent.KEYCODE_DPAD_LEFT) {
-                if (focused == wallpaperControlNext && wallpaperControlPrev != null) {
-                    wallpaperControlPrev.requestFocus();
+                if (focused == next && prev != null) {
+                    prev.requestFocus();
                 } else {
                     dock.getChildAt(dock.getChildCount() - 1).requestFocus();
                 }
             } else {
-                if (focused == wallpaperControlPrev && wallpaperControlNext != null) {
-                    wallpaperControlNext.requestFocus();
+                if (focused == prev && next != null) {
+                    next.requestFocus();
                 } else {
                     dock.getChildAt(0).requestFocus();
                 }
@@ -5644,35 +5294,21 @@ public class LauncherActivity extends Activity {
             return true;
         }
         if (isFocusIn(dock)) {
-            int index = dockIndexOf(focused);
+            int index = widgets.dockIndexOf(focused);
             if (index < 0) {
                 return false;
             }
-            if (key == KeyEvent.KEYCODE_DPAD_LEFT && index == 0
-                    && wallpaperControlNext != null) {
-                wallpaperControlNext.requestFocus();
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT && index == 0 && next != null) {
+                next.requestFocus();
                 return true;
             }
             if (key == KeyEvent.KEYCODE_DPAD_RIGHT && index == dock.getChildCount() - 1
-                    && wallpaperControlPrev != null) {
-                wallpaperControlPrev.requestFocus();
+                    && prev != null) {
+                prev.requestFocus();
                 return true;
             }
         }
         return false;
-    }
-
-
-    /** 焦点可能落在 dock 条目的子 View 上，这里沿父链找回顶层条目下标 */
-    private int dockIndexOf(View focused) {
-        View v = focused;
-        while (v != null) {
-            if (v.getParent() == dock) {
-                return dock.indexOfChild(v);
-            }
-            v = v.getParent() instanceof View ? (View) v.getParent() : null;
-        }
-        return -1;
     }
 
     boolean isFocusIn(View parent) {
@@ -5696,7 +5332,7 @@ public class LauncherActivity extends Activity {
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
             int key = event.getKeyCode();
             View focused = getCurrentFocus();
-            if (!menuOpen && !drawerOpen && (focused == null || focused == focusSink)
+            if (!isMenuOpen() && !drawerOpen && (focused == null || focused == focusSink)
                     && (key == KeyEvent.KEYCODE_DPAD_LEFT
                     || key == KeyEvent.KEYCODE_DPAD_RIGHT
                     || key == KeyEvent.KEYCODE_DPAD_CENTER
@@ -5705,11 +5341,11 @@ public class LauncherActivity extends Activity {
                 focusFirstDockItem();
                 return true;
             }
-            if (menuOpen) {
+            if (isMenuOpen()) {
                 // 菜单打开时，上/下或再按菜单键都收起菜单
                 if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN
                         || key == KeyEvent.KEYCODE_MENU) {
-                    closeMenu();
+                    menu.close();
                     return true;
                 }
             } else if (key == KeyEvent.KEYCODE_MENU) {
@@ -5717,11 +5353,11 @@ public class LauncherActivity extends Activity {
                 if (drawerOpen) {
                     closeDrawer();
                 }
-                openMenu();
+                menu.open();
                 return true;
             } else if (!drawerOpen && key == KeyEvent.KEYCODE_DPAD_UP) {
                 // dock 和左右键现在同一行，上键一律直接呼出菜单
-                openMenu();
+                menu.open();
                 return true;
             } else if (!drawerOpen && (key == KeyEvent.KEYCODE_DPAD_LEFT
                     || key == KeyEvent.KEYCODE_DPAD_RIGHT)
@@ -5800,39 +5436,8 @@ public class LauncherActivity extends Activity {
     }
 
     private void refreshDock() {
-        // 重建前记住焦点所在的应用：removeAllViews 会清掉焦点，
-        // 不恢复的话 Android 会把焦点甩给同一行的 ◀ ▶（点应用启动瞬间闪一下左右键）。
-        String keepKey = null;
-        if (dock != null && isFocusIn(dock)) {
-            int idx = dockIndexOf(getCurrentFocus());
-            if (idx >= 0 && idx < dock.getChildCount()) {
-                Object tag = dock.getChildAt(idx).getTag();
-                if (tag instanceof String) {
-                    keepKey = (String) tag;
-                }
-            }
-        }
-        dock.removeAllViews();
-        List<AppEntry> source = buildDockSource();
-        int count = Math.min(source.size(), iconsPerRow());
-        if (count == 0) {
-            TextView empty = new TextView(this);
-            empty.setText("　");
-            empty.setFocusable(true);
-            empty.setFocusableInTouchMode(true);
-            dock.addView(empty);
-            return;
-        }
-        for (int i = 0; i < count; i++) {
-            dock.addView(makeDockItem(source.get(i)));
-        }
-        if (keepKey != null) {
-            for (int i = 0; i < dock.getChildCount(); i++) {
-                if (keepKey.equals(dock.getChildAt(i).getTag())) {
-                    dock.getChildAt(i).requestFocus();
-                    break;
-                }
-            }
+        if (widgets != null) {
+            widgets.refreshDock();
         }
     }
 
@@ -5841,7 +5446,7 @@ public class LauncherActivity extends Activity {
      * 单个应用的时间 = max(最后打开时间, 首次安装时间)，按时间倒序取前 7 个。
      * 新装的 App 会立刻排到前面；打开过的 App 按最近一次打开时间前移。
      */
-    private List<AppEntry> buildDockSource() {
+    List<AppEntry> buildDockSource() {
         List<AppEntry> out = new ArrayList<>(allApps);
         Collections.sort(out, new Comparator<AppEntry>() {
             @Override
@@ -5863,7 +5468,7 @@ public class LauncherActivity extends Activity {
         return Math.max(openTime, entry.firstInstallTime);
     }
 
-    private View makeDockItem(final AppEntry entry) {
+    View makeDockItem(final AppEntry entry) {
         LinearLayout item = new LinearLayout(this);
         item.setOrientation(LinearLayout.VERTICAL);
         item.setGravity(Gravity.CENTER);
@@ -6082,13 +5687,12 @@ public class LauncherActivity extends Activity {
                 .start();
     }
 
-    private void focusFirstDockItem() {
-        if (dock != null && dock.getVisibility() == View.VISIBLE && dock.getChildCount() > 0) {
-            dock.getChildAt(0).requestFocus();
+    void focusFirstDockItem() {
+        if (widgets != null && widgets.focusDockFirst()) {
             return;
         }
-        if (dock == null || dock.getVisibility() != View.VISIBLE) {
-            // Dock 被关闭：焦点交给空焦点位，别留在不可见的控件上
+        // Dock 被关闭：焦点交给空焦点位，别留在不可见的控件上
+        if (widgets == null || !widgets.isDockVisible()) {
             clearDesktopFocus();
         }
     }
@@ -6097,132 +5701,42 @@ public class LauncherActivity extends Activity {
 
     /** 当前是否该显示桌面控件（显示方式为隐藏，或自动隐藏已到点时不显示） */
     private boolean widgetsShown() {
-        if (WIDGET_MODE_HIDDEN.equals(widgetMode)) {
-            return false;
-        }
-        return !(WIDGET_MODE_AUTO.equals(widgetMode) && widgetAutoHidden);
+        return widgets == null || widgets.widgetsShown();
     }
 
     private void applyWidgetVisibility() {
-        applyWidgetVisibility(false);
+        if (widgets != null) {
+            widgets.applyVisibility();
+        }
     }
 
-    /**
-     * @param animate true 时用淡入淡出过渡（自动隐藏/恢复用）；
-     *                false 时立即生效（开关、显示方式切换、回到桌面时用）
-     */
     private void applyWidgetVisibility(boolean animate) {
-        boolean shown = widgetsShown();
-        // 只在自动隐藏模式下做动画，常驻/隐藏方式的切换保持即时
-        boolean fade = animate && WIDGET_MODE_AUTO.equals(widgetMode);
-        setWidgetVisible(clockBox, widgetClock && shown, fade);
-        setWidgetVisible(weatherBox, widgetWeather && shown, fade);
-        setWidgetVisible(dock, widgetDock && shown, fade);
-        setWidgetVisible(wallpaperControls, widgetArrows && shown, fade);
-        setWidgetVisible(hintView, widgetDrawer && shown, fade);
-        if (!widgetDrawer && drawerOpen) {
-            closeDrawer();
-        }
-    }
-
-    /** 用 INVISIBLE 而不是 GONE：保留原有排版位置，隐藏/恢复时界面不跳动 */
-    private void setWidgetVisible(View v, boolean visible, boolean animate) {
-        if (v == null) {
-            return;
-        }
-        v.animate().cancel();
-        if (!animate) {
-            v.setAlpha(1f);
-            v.setTranslationY(0f);
-            v.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
-            return;
-        }
-        if (visible) {
-            if (v.getVisibility() != View.VISIBLE) {
-                v.setVisibility(View.VISIBLE);
-                v.setAlpha(0f);
-                v.setTranslationY(-dp(WIDGET_FADE_OFFSET_DP));
-            }
-            v.animate().alpha(1f).translationY(0f)
-                    .setDuration(WIDGET_FADE_MS)
-                    .setInterpolator(OPEN_EASE)
-                    .start();
-        } else if (v.getVisibility() == View.VISIBLE) {
-            v.animate().alpha(0f).translationY(-dp(WIDGET_FADE_OFFSET_DP))
-                    .setDuration(WIDGET_FADE_MS)
-                    .setInterpolator(CLOSE_EASE)
-                    .withEndAction(new Runnable() {
-                        @Override
-                        public void run() {
-                            // 动画期间用户又按了键的话，不要把它重新藏起来
-                            if (!widgetsShown()) {
-                                v.setVisibility(View.INVISIBLE);
-                                v.setAlpha(1f);
-                                v.setTranslationY(0f);
-                            }
-                        }
-                    })
-                    .start();
+        if (widgets != null) {
+            widgets.applyVisibility(animate);
         }
     }
 
     /** 当前没有任何浮层/抽屉，才算桌面空闲 */
-    private boolean onDesktopIdle() {
-        return !isRemoteOpen() && !isManagerOpen() && !isSettingsOpen() && !menuOpen && !drawerOpen;
+    boolean onDesktopIdle() {
+        return !isRemoteOpen() && !isManagerOpen() && !isSettingsOpen() && !isMenuOpen() && !drawerOpen;
     }
 
-    private final Runnable widgetAutoHideTick = new Runnable() {
-        @Override
-        public void run() {
-            if (!WIDGET_MODE_AUTO.equals(widgetMode) || widgetAutoHidden) {
-                return;
-            }
-            if (!onDesktopIdle()) {
-                // 浮层打开时不计空闲，等回到桌面再继续计时
-                handler.postDelayed(this, WIDGET_AUTO_HIDE_MS);
-                return;
-            }
-            widgetAutoHidden = true;
-            applyWidgetVisibility(true);
-            Log.i(TAG, "widgets auto hidden after " + (WIDGET_AUTO_HIDE_MS / 1000) + "s idle");
-        }
-    };
+    /** 全局 UI Handler：控件自动隐藏等跨类计时任务共用 */
+    Handler uiHandler() {
+        return handler;
+    }
 
     /** 任意按键/触摸后调用：恢复自动隐藏的控件，并重新开始空闲计时 */
-    private void resetWidgetAutoHide() {
-        handler.removeCallbacks(widgetAutoHideTick);
-        if (!WIDGET_MODE_AUTO.equals(widgetMode) || !onDesktopIdle()) {
-            return;
+    void resetWidgetAutoHide() {
+        if (widgets != null) {
+            widgets.resetAutoHide();
         }
-        if (widgetAutoHidden) {
-            widgetAutoHidden = false;
-            applyWidgetVisibility(true);
-            View focused = getCurrentFocus();
-            if (dock != null && dock.getVisibility() == View.VISIBLE
-                    && (focused == null || !focused.isShown())) {
-                focusFirstDockItem();
-            }
-        }
-        handler.postDelayed(widgetAutoHideTick, WIDGET_AUTO_HIDE_MS);
     }
 
     void setWidgetMode(String mode) {
-        if (mode == null) {
-            return;
+        if (widgets != null) {
+            widgets.setMode(mode);
         }
-        widgetMode = mode;
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_WIDGET_MODE, mode).apply();
-        widgetAutoHidden = false;
-        handler.removeCallbacks(widgetAutoHideTick);
-        applyWidgetVisibility();
-        resetWidgetAutoHide();
-        Log.i(TAG, "widget mode: " + mode);
-    }
-
-    private void setWidgetFlag(String key, boolean value) {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putBoolean(key, value).apply();
     }
 
     /** 取消桌面图标选中：把焦点交给一个不可见的空焦点，Dock 图标全部无遮罩 */
