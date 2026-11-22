@@ -491,7 +491,7 @@ public class RemoteImportServer {
             }
             if (frame == null) {
                 // 4K H.264 用 MediaMetadataRetriever 取不到帧，退回 MediaCodec 解一帧
-                frame = LauncherActivity.decodeVideoFrameWithCodec(
+                frame = BackgroundImageLoader.decodeVideoFrameWithCodec(
                         file.getAbsolutePath(), THUMB_W);
             }
             if (frame == null) {

@@ -23,8 +23,6 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.ImageFormat;
-import android.graphics.YuvImage;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
@@ -36,16 +34,12 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.media.Image;
 import android.media.MediaCodec;
-import android.media.MediaExtractor;
 import android.media.MediaFormat;
-import android.media.MediaMetadataRetriever;
 import android.media.MediaMuxer;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.renderscript.Allocation;
@@ -77,10 +71,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.VideoView;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileReader;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -122,8 +114,6 @@ public class LauncherActivity extends Activity {
     private static final String KEY_4K_BACKGROUND = "current_4k_background";
     /** 壁纸自定义排序：按行保存文件名，未列出的按名称排在后面 */
     private static final String KEY_BG_ORDER = "background_order";
-    /** 导入壁纸时申请存储读取权限 */
-    private static final int REQ_READ_STORAGE = 4101;
     /** 桌面设置：图标大小预设（small / medium / large） */
     private static final String KEY_ICON_SIZE = "icon_size";
     static final String ICON_SIZE_SMALL = "small";
@@ -243,6 +233,10 @@ public class LauncherActivity extends Activity {
     private AppRepository appRepository;
     /** 壁纸文件仓储：目录解析 / 扫描 / 复制入库 / 迁移 */
     private WallpaperStore store;
+    /** 壁纸位图解码：原图 / 4K 裁切 / 缩略图 / 视频取帧 */
+    private BackgroundImageLoader imageLoader;
+    /** 壁纸导入流程：本机 / USB 浏览与入库 */
+    private WallpaperImporter importer;
     /** 组件 → 最后一次打开时间；和新安装时间合并后决定底部栏顺序 */
     private final Map<String, Long> openTimes = new HashMap<>();
 
@@ -275,9 +269,6 @@ public class LauncherActivity extends Activity {
     /** 桌面是否在前台：后台时导入结束不要偷偷恢复视频 */
     private boolean uiForeground = true;
     private boolean cacheCleanupStarted;
-    /** 最近解码过的壁纸位图：同一张图在启动/切图时只解码一次 */
-    private Bitmap lastLoadedBitmap;
-    private String lastLoadedKey;
     private View startupBlackout;
     private boolean startupRevealed;
     private boolean startupAppScanDone;
@@ -363,6 +354,8 @@ public class LauncherActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         store = new WallpaperStore(this);
+        imageLoader = new BackgroundImageLoader(this);
+        importer = new WallpaperImporter(this, store);
         fourKStatic = new FourKStaticPlayer(this);
         videoPlayer = new VideoWallpaperPlayer(this);
         slideshow = new SlideshowController(this);
@@ -506,6 +499,22 @@ public class LauncherActivity extends Activity {
         requestPermissions(new String[]{
                 android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
                 android.Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_WRITE_STORAGE);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_WRITE_STORAGE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                store.migratePrivateToPublic();
+                reload4KBackgrounds();
+                reloadVideoBackgrounds();
+                refresh4KStaticMode();
+                Toast.makeText(this, "壁纸已保存到公共目录，卸载不会丢失", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        importer.onRequestPermissionsResult(requestCode, grantResults);
     }
 
     private List<BackgroundItem> scanVideoBackgrounds() {
@@ -773,7 +782,7 @@ public class LauncherActivity extends Activity {
             Log.w(TAG, "read asset length failed: " + assetPath, t);
             return -1;
         } finally {
-            closeQuietly(in);
+            BackgroundImageLoader.closeQuietly(in);
         }
     }
 
@@ -1165,7 +1174,7 @@ public class LauncherActivity extends Activity {
 
     /** 后台预编码下一张 4K 壁纸；由 FourKStaticPlayer 保证同一时刻只有一个编码任务 */
     int[] targetSizeFor(BackgroundItem item) {
-        if (readImageBounds(item) == null) {
+        if (imageLoader.readImageBounds(item) == null) {
             return null;
         }
         // 固定 4K 画布：所有壁纸编码尺寸一致，视频 plane 切换时不需要重配缩放/色彩，
@@ -1174,81 +1183,7 @@ public class LauncherActivity extends Activity {
     }
 
     Bitmap decode4KBitmap(BackgroundItem item, int targetW, int targetH) {
-        int[] bounds = readImageBounds(item);
-        if (bounds == null) {
-            return null;
-        }
-        int sample = 1;
-        while (bounds[0] / (sample * 2) >= targetW
-                && bounds[1] / (sample * 2) >= targetH) {
-            sample *= 2;
-        }
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sample;
-        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap src = decodeImage(item, options);
-        if (src == null) {
-            return null;
-        }
-        Bitmap dst = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(dst);
-        Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
-        float scale = Math.max((float) targetW / src.getWidth(),
-                (float) targetH / src.getHeight());
-        int cropW = Math.min(src.getWidth(), Math.round(targetW / scale));
-        int cropH = Math.min(src.getHeight(), Math.round(targetH / scale));
-        int left = (src.getWidth() - cropW) / 2;
-        int top = (src.getHeight() - cropH) / 2;
-        Rect srcRect = new Rect(left, top, left + cropW, top + cropH);
-        Rect dstRect = new Rect(0, 0, targetW, targetH);
-        // UI 和视频统一 overscan；低清目标尺寸同样适用
-        canvas.save();
-        canvas.scale(WALLPAPER_OVERSCAN, WALLPAPER_OVERSCAN,
-                targetW / 2f, targetH / 2f);
-        canvas.drawBitmap(src, srcRect, dstRect, paint);
-        canvas.restore();
-        src.recycle();
-        return dst;
-    }
-
-    /** 读图片尺寸；文件壁纸和 APK 内置壁纸都支持，失败返回 null */
-    int[] readImageBounds(BackgroundItem item) {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        if (item.assetName != null) {
-            InputStream in = null;
-            try {
-                in = getAssets().open(assetPath(item.assetName));
-                BitmapFactory.decodeStream(in, null, bounds);
-            } catch (Throwable t) {
-                Log.w(TAG, "read asset bounds failed: " + item.assetName, t);
-                return null;
-            } finally {
-                closeQuietly(in);
-            }
-        } else {
-            BitmapFactory.decodeFile(item.filePath, bounds);
-        }
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            return null;
-        }
-        return new int[]{bounds.outWidth, bounds.outHeight};
-    }
-
-    Bitmap decodeImage(BackgroundItem item, BitmapFactory.Options options) {
-        if (item.assetName != null) {
-            InputStream in = null;
-            try {
-                in = getAssets().open(assetPath(item.assetName));
-                return BitmapFactory.decodeStream(in, null, options);
-            } catch (Throwable t) {
-                Log.w(TAG, "decode asset failed: " + item.assetName, t);
-                return null;
-            } finally {
-                closeQuietly(in);
-            }
-        }
-        return BitmapFactory.decodeFile(item.filePath, options);
+        return imageLoader.decode4KBitmap(item, targetW, targetH);
     }
 
     static byte[] bitmapToI420(Bitmap bitmap, int width, int height) {
@@ -1785,7 +1720,7 @@ public class LauncherActivity extends Activity {
         settingsPage.close();
     }
 
-    private void openRemoteImport() {
+    void openRemoteImport() {
         remotePage.open();
     }
 
@@ -2361,7 +2296,7 @@ public class LauncherActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final Bitmap bitmap = decodeThumbnail(item, 400, 225);
+                final Bitmap bitmap = imageLoader.decodeThumbnail(item, 400, 225);
                 if (bitmap == null) {
                     return;
                 }
@@ -2377,209 +2312,6 @@ public class LauncherActivity extends Activity {
                 });
             }
         }, "wallpaper-thumb").start();
-    }
-
-    private Bitmap decodeThumbnail(BackgroundItem item, int targetW, int targetH) {
-        if (WallpaperStore.isVideoName(item.name)) {
-            return item.filePath == null ? null : decodeVideoThumbnail(item.filePath, targetW);
-        }
-        try {
-            int[] bounds = readImageBounds(item);
-            if (bounds == null) {
-                return null;
-            }
-            int sample = 1;
-            while (bounds[0] / (sample * 2) >= targetW
-                    && bounds[1] / (sample * 2) >= targetH) {
-                sample *= 2;
-            }
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sample;
-            options.inPreferredConfig = Bitmap.Config.RGB_565;
-            return decodeImage(item, options);
-        } catch (Throwable t) {
-            Log.w(TAG, "decode thumbnail failed: " + item.name, t);
-            return null;
-        }
-    }
-
-    private Bitmap decodeVideoThumbnail(String path, int targetW) {
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            retriever.setDataSource(path);
-            Bitmap frame = null;
-            try {
-                frame = retriever.getScaledFrameAtTime(1_000_000L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC, targetW * 2, targetW);
-            } catch (Throwable ignored) {
-            }
-            if (frame == null) {
-                frame = retriever.getFrameAtTime(1_000_000L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-            }
-            if (frame == null) {
-                frame = retriever.getFrameAtTime(0L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-            }
-            if (frame == null) {
-                // 4K H.264 用 MediaMetadataRetriever 取不到帧（返回 null），
-                // 退回用 MediaCodec 硬解一帧。
-                frame = decodeVideoFrameWithCodec(path, targetW);
-            }
-            if (frame == null) {
-                return null;
-            }
-            if (frame.getWidth() <= targetW * 2) {
-                return frame;
-            }
-            int height = Math.max(1, Math.round(frame.getHeight() * (targetW * 2f)
-                    / frame.getWidth()));
-            Bitmap scaled = Bitmap.createScaledBitmap(frame, targetW * 2, height, true);
-            if (scaled != frame) {
-                frame.recycle();
-            }
-            return scaled;
-        } catch (Throwable t) {
-            Log.w(TAG, "decode video thumbnail failed: " + path, t);
-            return null;
-        } finally {
-            try {
-                retriever.release();
-            } catch (Throwable ignored) {
-            }
-        }
-    }
-
-    /** 用 MediaCodec 解出视频第 1 秒附近的一帧；MediaMetadataRetriever 拿不到 4K 帧时兜底 */
-    static Bitmap decodeVideoFrameWithCodec(String path, int targetW) {
-        MediaExtractor extractor = null;
-        MediaCodec codec = null;
-        try {
-            extractor = new MediaExtractor();
-            extractor.setDataSource(path);
-            int track = -1;
-            MediaFormat format = null;
-            for (int i = 0; i < extractor.getTrackCount(); i++) {
-                MediaFormat f = extractor.getTrackFormat(i);
-                String mime = f.getString(MediaFormat.KEY_MIME);
-                if (mime != null && mime.startsWith("video/")) {
-                    track = i;
-                    format = f;
-                    break;
-                }
-            }
-            if (track < 0 || format == null) {
-                return null;
-            }
-            extractor.selectTrack(track);
-            extractor.seekTo(1_000_000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
-            codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME));
-            codec.configure(format, null, null, 0);
-            codec.start();
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            long deadline = System.currentTimeMillis() + 10000L;
-            boolean inputDone = false;
-            while (System.currentTimeMillis() < deadline) {
-                if (!inputDone) {
-                    int inIndex = codec.dequeueInputBuffer(10000);
-                    if (inIndex >= 0) {
-                        ByteBuffer buffer = codec.getInputBuffer(inIndex);
-                        int size = buffer == null ? -1 : extractor.readSampleData(buffer, 0);
-                        if (size < 0) {
-                            codec.queueInputBuffer(inIndex, 0, 0, 0L,
-                                    MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-                            inputDone = true;
-                        } else {
-                            codec.queueInputBuffer(inIndex, 0, size,
-                                    extractor.getSampleTime(), 0);
-                            extractor.advance();
-                        }
-                    }
-                }
-                int outIndex = codec.dequeueOutputBuffer(info, 10000);
-                if (outIndex >= 0) {
-                    boolean eos = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
-                    Bitmap frame = null;
-                    if (info.size > 0) {
-                        Image image = codec.getOutputImage(outIndex);
-                        if (image != null) {
-                            frame = yuvImageToBitmap(image, targetW);
-                        }
-                    }
-                    codec.releaseOutputBuffer(outIndex, false);
-                    if (frame != null) {
-                        Log.i(TAG, "video thumb via codec: " + new File(path).getName()
-                                + " " + frame.getWidth() + "x" + frame.getHeight());
-                        return frame;
-                    }
-                    if (eos) {
-                        break;
-                    }
-                }
-            }
-            return null;
-        } catch (Throwable t) {
-            Log.w(TAG, "codec thumb failed: " + path, t);
-            return null;
-        } finally {
-            try {
-                if (codec != null) {
-                    codec.stop();
-                    codec.release();
-                }
-            } catch (Throwable ignored) {
-            }
-            try {
-                if (extractor != null) {
-                    extractor.release();
-                }
-            } catch (Throwable ignored) {
-            }
-        }
-    }
-
-    /** YUV_420_888 的 Image 转 Bitmap（走 NV21 + JPEG，省掉手写 YUV→RGB） */
-    static Bitmap yuvImageToBitmap(Image image, int targetW) {
-        int width = image.getWidth() & ~1;
-        int height = image.getHeight() & ~1;
-        if (width <= 0 || height <= 0) {
-            return null;
-        }
-        byte[] nv21 = new byte[width * height * 3 / 2];
-        Image.Plane[] planes = image.getPlanes();
-        ByteBuffer yBuffer = planes[0].getBuffer();
-        int yRowStride = planes[0].getRowStride();
-        for (int row = 0; row < height; row++) {
-            yBuffer.position(row * yRowStride);
-            yBuffer.get(nv21, row * width, width);
-        }
-        ByteBuffer uBuffer = planes[1].getBuffer();
-        ByteBuffer vBuffer = planes[2].getBuffer();
-        int uRowStride = planes[1].getRowStride();
-        int uPixelStride = planes[1].getPixelStride();
-        int vRowStride = planes[2].getRowStride();
-        int vPixelStride = planes[2].getPixelStride();
-        int offset = width * height;
-        for (int row = 0; row < height / 2; row++) {
-            for (int col = 0; col < width / 2; col++) {
-                nv21[offset + row * width + col * 2] =
-                        vBuffer.get(row * vRowStride + col * vPixelStride);
-                nv21[offset + row * width + col * 2 + 1] =
-                        uBuffer.get(row * uRowStride + col * uPixelStride);
-            }
-        }
-        ByteArrayOutputStream jpeg = new ByteArrayOutputStream();
-        new YuvImage(nv21, ImageFormat.NV21, width, height, null)
-                .compressToJpeg(new Rect(0, 0, width, height), 85, jpeg);
-        byte[] data = jpeg.toByteArray();
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inPreferredConfig = Bitmap.Config.RGB_565;
-        int sample = 1;
-        while (sample < 16 && width / (sample * 2) >= targetW * 2) {
-            sample *= 2;
-        }
-        options.inSampleSize = sample;
-        return BitmapFactory.decodeByteArray(data, 0, data.length, options);
     }
 
     void applyWallpaperByName(String name) {
@@ -2882,469 +2614,29 @@ public class LauncherActivity extends Activity {
 
     /** 「导入」按钮：先选导入方式，再走对应的流程。 */
     void showImportChooser() {
-        final List<File> usbRoots = usbImportRoots();
-        final List<String> labels = new ArrayList<>();
-        labels.add("从本机导入");
-        final int usbIndex = usbRoots.isEmpty() ? -1 : labels.size();
-        if (usbIndex >= 0) {
-            labels.add("从 USB 设备导入");
-        }
-        labels.add("远程导入（手机/电脑网页上传）");
-        new AlertDialog.Builder(this)
-                .setTitle("导入壁纸")
-                .setItems(labels.toArray(new String[0]), new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        if (which == 0) {
-                            importFromLocal();
-                        } else if (usbIndex >= 0 && which == usbIndex) {
-                            pickUsbRootAndBrowse(usbRoots);
-                        } else {
-                            openRemoteImport();
-                        }
-                    }
-                })
-                .show();
+        importer.showChooser();
     }
 
-    /** 从本机（内置存储）导入：直接进根目录浏览，不再弹位置选择。 */
-    private void importFromLocal() {
-        if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{
-                    android.Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_READ_STORAGE);
-            return;
+    /** 静态壁纸导入完成：刷新列表并应用最后一张成功导入的图 */
+    void onWallpapersImported(String lastName) {
+        reloadBackgrounds();
+        reload4KBackgrounds();
+        refresh4KStaticMode();
+        if (lastName != null) {
+            applyWallpaperByName(lastName);
         }
-        File root = Environment.getExternalStorageDirectory();
-        if (root == null || !root.isDirectory()) {
-            showImportRoots();
-            return;
-        }
-        showFileBrowser(root);
+        refreshManager();
     }
 
-    /** 当前接入的 U 盘 / 外接盘（/storage 下非模拟卷、/mnt 下 usb|media）。 */
-    private List<File> usbImportRoots() {
-        List<File> candidates = new ArrayList<>();
-        addImportRoots(candidates, new File("/storage"), false);
-        addImportRoots(candidates, new File("/mnt"), true);
-        List<File> roots = new ArrayList<>();
-        for (File dir : candidates) {
-            if (isRealMountPoint(dir)) {
-                roots.add(dir);
-            }
-        }
-        Log.i(TAG, "usb roots: " + roots + " (candidates=" + candidates + ")");
-        return roots;
+    /** 动态壁纸导入完成：刷新视频列表 */
+    void onVideosImported() {
+        reloadVideoBackgrounds();
+        refreshManager();
     }
 
-    /** 是否出现在 /proc/mounts 里——厂商会预建空的 /mnt/usb 之类目录，不能只看目录存在。 */
-    private boolean isRealMountPoint(File dir) {
-        final String path = dir.getAbsolutePath();
-        BufferedReader reader = null;
-        try {
-            reader = new BufferedReader(new FileReader("/proc/mounts"));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String[] parts = line.split(" ");
-                if (parts.length < 2) {
-                    continue;
-                }
-                String mountPoint = parts[1].replace("\\040", " ");
-                if (mountPoint.equals(path) || mountPoint.equals(path + "/")) {
-                    return true;
-                }
-            }
-        } catch (Throwable e) {
-            Log.w(TAG, "read /proc/mounts failed: " + e);
-            return isStorageVolumeRemovable(dir);
-        } finally {
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        return false;
-    }
-
-    /** /proc/mounts 读不到时的兜底：问 StorageManager 有没有可移动卷挂在 /storage/<uuid>。 */
-    private boolean isStorageVolumeRemovable(File dir) {
-        try {
-            android.os.storage.StorageManager sm =
-                    (android.os.storage.StorageManager) getSystemService(STORAGE_SERVICE);
-            if (sm == null) {
-                return false;
-            }
-            for (android.os.storage.StorageVolume volume : sm.getStorageVolumes()) {
-                if (!volume.isRemovable()) {
-                    continue;
-                }
-                String uuid = volume.getUuid();
-                if (uuid != null && dir.getAbsolutePath().endsWith("/" + uuid)) {
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return false;
-    }
-
-    private void pickUsbRootAndBrowse(final List<File> roots) {
-        if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{
-                    android.Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_READ_STORAGE);
-            return;
-        }
-        if (roots.isEmpty()) {
-            Toast.makeText(this, "没有检测到 USB 设备", Toast.LENGTH_LONG).show();
-            return;
-        }
-        if (roots.size() == 1) {
-            showFileBrowser(roots.get(0));
-            return;
-        }
-        final String[] labels = new String[roots.size()];
-        for (int i = 0; i < roots.size(); i++) {
-            labels[i] = roots.get(i).getAbsolutePath();
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("选择 USB 设备")
-                .setItems(labels, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        showFileBrowser(roots.get(which));
-                    }
-                })
-                .show();
-    }
-
-    private void requestImport() {
-        if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED) {
-            showImportRoots();
-        } else {
-            requestPermissions(new String[]{
-                    android.Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_READ_STORAGE);
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_WRITE_STORAGE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                store.migratePrivateToPublic();
-                reload4KBackgrounds();
-                reloadVideoBackgrounds();
-                refresh4KStaticMode();
-                Toast.makeText(this, "壁纸已保存到公共目录，卸载不会丢失", Toast.LENGTH_SHORT).show();
-            }
-            return;
-        }
-        if (requestCode != REQ_READ_STORAGE) {
-            return;
-        }
-        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            showImportRoots();
-        } else {
-            Toast.makeText(this, "需要存储读取权限才能导入壁纸", Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void showImportRoots() {
-        final List<File> roots = new ArrayList<>();
-        File sd = Environment.getExternalStorageDirectory();
-        if (sd != null && sd.isDirectory()) {
-            roots.add(sd);
-        }
-        addImportRoots(roots, new File("/storage"), false);
-        addImportRoots(roots, new File("/mnt"), true);
-        if (roots.isEmpty()) {
-            Toast.makeText(this, "没有找到可访问的存储位置", Toast.LENGTH_LONG).show();
-            return;
-        }
-        final String[] labels = new String[roots.size()];
-        for (int i = 0; i < roots.size(); i++) {
-            File root = roots.get(i);
-            String prefix = root.equals(sd) ? "内置存储" : "U 盘 / 外部存储";
-            labels[i] = prefix + "  " + root.getAbsolutePath();
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("从哪个位置导入")
-                .setItems(labels, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        showFileBrowser(roots.get(which));
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    /** 只认真实的可移动卷名：usb / usb_x / media-uuid；排除内部卷 emulated、self、media_rw。 */
-    private static boolean isUsbLikeVolume(String name) {
-        if ("emulated".equals(name) || "self".equals(name) || "media_rw".equals(name)) {
-            return false;
-        }
-        return name.startsWith("usb") || name.startsWith("media-") || name.startsWith("media_")
-                || (name.startsWith("media") && name.indexOf('-') > 0);
-    }
-
-    private void addImportRoots(List<File> roots, File parent, boolean usbOnly) {
-        File[] children = parent.listFiles();
-        if (children == null) {
-            return;
-        }
-        List<File> dirs = new ArrayList<>();
-        for (File child : children) {
-            if (!child.isDirectory() || !child.canRead()) {
-                continue;
-            }
-            String name = child.getName().toLowerCase(Locale.US);
-            if ("emulated".equals(name) || "self".equals(name)) {
-                continue;
-            }
-            if (usbOnly && !isUsbLikeVolume(name)) {
-                continue;
-            }
-            dirs.add(child);
-        }
-        Collections.sort(dirs, new Comparator<File>() {
-            @Override
-            public int compare(File a, File b) {
-                return a.getName().compareToIgnoreCase(b.getName());
-            }
-        });
-        for (File dir : dirs) {
-            boolean duplicated = false;
-            for (File existing : roots) {
-                if (existing.getAbsolutePath().equals(dir.getAbsolutePath())) {
-                    duplicated = true;
-                    break;
-                }
-            }
-            if (!duplicated) {
-                roots.add(dir);
-            }
-        }
-    }
-
-    private void showFileBrowser(final File dir) {
-        if (dir == null || !dir.isDirectory() || !dir.canRead()) {
-            Toast.makeText(this, "无法读取该目录", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        final boolean wantVideo = wallpaperManager.getType() == WallpaperManagerPage.VIDEOS;
-        File[] children = dir.listFiles();
-        List<File> dirs = new ArrayList<>();
-        final List<File> images = new ArrayList<>();
-        if (children != null) {
-            for (File child : children) {
-                if (child.isDirectory() && !child.getName().startsWith(".")) {
-                    dirs.add(child);
-                } else if (child.isFile()) {
-                    boolean match = wantVideo
-                            ? WallpaperStore.isVideoName(child.getName()) : WallpaperStore.isImageName(child.getName());
-                    if (match) {
-                        images.add(child);
-                    }
-                }
-            }
-        }
-        Comparator<File> byName = new Comparator<File>() {
-            @Override
-            public int compare(File a, File b) {
-                return a.getName().compareToIgnoreCase(b.getName());
-            }
-        };
-        Collections.sort(dirs, byName);
-        Collections.sort(images, byName);
-
-        final List<String> labels = new ArrayList<>();
-        final List<File> targets = new ArrayList<>();
-        File parent = dir.getParentFile();
-        if (parent != null && parent.canRead()) {
-            labels.add("⬆ 上一级");
-            targets.add(parent);
-        }
-        if (!images.isEmpty()) {
-            labels.add(wantVideo
-                    ? "导入本目录全部视频（" + images.size() + " 个）"
-                    : "导入本目录全部图片（" + images.size() + " 张）");
-            targets.add(null);
-        }
-        for (File child : dirs) {
-            labels.add("📁 " + child.getName());
-            targets.add(child);
-        }
-        for (File image : images) {
-            labels.add((wantVideo ? "🎬 " : "🖼 ") + image.getName());
-            targets.add(image);
-        }
-        if (labels.isEmpty()) {
-            labels.add("（空目录）");
-            targets.add(null);
-        }
-
-        new AlertDialog.Builder(this)
-                .setTitle(dir.getAbsolutePath())
-                .setItems(labels.toArray(new String[0]), new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        File target = targets.get(which);
-                        if (target == null) {
-                            if (labels.get(which).startsWith("导入本目录")) {
-                                if (wantVideo) {
-                                    importVideos(images);
-                                } else {
-                                    importWallpapers(images);
-                                }
-                            }
-                        } else if (target.isDirectory()) {
-                            showFileBrowser(target);
-                        } else {
-                            List<File> one = new ArrayList<>();
-                            one.add(target);
-                            if (wantVideo) {
-                                importVideos(one);
-                            } else {
-                                importWallpapers(one);
-                            }
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private void importWallpapers(final List<File> files) {
-        if (files == null || files.isEmpty()) {
-            return;
-        }
-        Toast.makeText(this, "正在导入 " + files.size() + " 张…", Toast.LENGTH_SHORT).show();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                int ok = 0;
-                String lastName = null;
-                for (File file : files) {
-                    String name = copyWallpaperIntoDevice(file);
-                    if (name != null) {
-                        ok++;
-                        lastName = name;
-                    }
-                }
-                final int okCount = ok;
-                final String last = lastName;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (okCount <= 0) {
-                            Toast.makeText(LauncherActivity.this,
-                                    "导入失败：不是有效图片或无法读取", Toast.LENGTH_LONG).show();
-                            return;
-                        }
-                        reloadBackgrounds();
-                        reload4KBackgrounds();
-                        refresh4KStaticMode();
-                        if (last != null) {
-                            applyWallpaperByName(last);
-                        }
-                        refreshManager();
-                        Toast.makeText(LauncherActivity.this,
-                                "已导入 " + okCount + " 张", Toast.LENGTH_SHORT).show();
-                        Log.i(TAG, "wallpapers imported: " + okCount);
-                    }
-                });
-            }
-        }, "wallpaper-import").start();
-    }
-
-    private void importVideos(final List<File> files) {
-        if (files == null || files.isEmpty()) {
-            return;
-        }
-        Toast.makeText(this, "正在导入 " + files.size() + " 个视频…", Toast.LENGTH_SHORT).show();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                int ok = 0;
-                for (File file : files) {
-                    if (copyVideoIntoDevice(file) != null) {
-                        ok++;
-                    }
-                }
-                final int okCount = ok;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        reloadVideoBackgrounds();
-                        refreshManager();
-                        Toast.makeText(LauncherActivity.this,
-                                okCount > 0 ? ("已导入 " + okCount + " 个视频，点一下设为当前")
-                                        : "导入失败：不是可播放的视频",
-                                Toast.LENGTH_LONG).show();
-                        Log.i(TAG, "videos imported: " + okCount);
-                    }
-                });
-            }
-        }, "video-import").start();
-    }
-
-    /** 校验并复制视频到 files/backgrounds_video，返回新文件名；失败返回 null */
-    private String copyVideoIntoDevice(File src) {
-        if (src == null || !src.isFile() || !WallpaperStore.isVideoName(src.getName())) {
-            return null;
-        }
-        if (src.length() <= 0) {
-            return null;
-        }
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            retriever.setDataSource(src.getAbsolutePath());
-            String duration = retriever.extractMetadata(
-                    MediaMetadataRetriever.METADATA_KEY_DURATION);
-            if (TextUtils.isEmpty(duration) || "0".equals(duration)) {
-                return null;
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "reject video (cannot read): " + src.getName(), t);
-            return null;
-        } finally {
-            try {
-                retriever.release();
-            } catch (Throwable ignored) {
-            }
-        }
-        File dest = store.copyInto(src, store.videoDir());
-        if (dest == null) {
-            Log.w(TAG, "copy video failed: " + src.getName());
-            return null;
-        }
-        return dest.getName();
-    }
-
-    /** 校验并复制到 files/backgrounds_4k，返回新文件名；失败返回 null */
-    private String copyWallpaperIntoDevice(File src) {
-        if (src == null || !src.isFile() || !WallpaperStore.isImageName(src.getName())) {
-            return null;
-        }
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(src.getAbsolutePath(), bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            return null;
-        }
-        File dest = store.copyInto(src, store.staticDir());
-        if (dest == null) {
-            Log.w(TAG, "import wallpaper failed: " + src.getAbsolutePath());
-            return null;
-        }
-        Log.i(TAG, "wallpaper imported: " + src.getAbsolutePath() + " -> " + dest.getName());
-        return dest.getName();
+    /** 导入浏览目录时按管理页当前分栏过滤文件 */
+    boolean managerWantsVideo() {
+        return wallpaperManager.getType() == WallpaperManagerPage.VIDEOS;
     }
 
     // ---------- 背景轮播（SlideshowController）宿主 ----------
@@ -3478,94 +2770,7 @@ public class LauncherActivity extends Activity {
     }
 
     Bitmap loadBackground(BackgroundItem item) {
-        if (item.assetName != null) {
-            return loadAsset(item.assetName);
-        }
-        return loadFileCached(item.filePath);
-    }
-
-    /** assets 内的路径：带 `/` 的按原样用（内置壁纸在 builtin/ 下），否则当作 backgrounds/ */
-    private static String assetPath(String name) {
-        return name.indexOf('/') >= 0 ? name : WallpaperStore.LEGACY_IMAGE_DIR + "/" + name;
-    }
-
-    private Bitmap loadAsset(String name) {
-        String path = assetPath(name);
-        InputStream input = null;
-        try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            input = getAssets().open(path);
-            BitmapFactory.decodeStream(input, null, bounds);
-            input.close();
-            input = null;
-
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight);
-            input = getAssets().open(path);
-            return BitmapFactory.decodeStream(input, null, options);
-        } catch (Throwable t) {
-            Log.w(TAG, "load background asset failed: " + name, t);
-            return null;
-        } finally {
-            closeQuietly(input);
-        }
-    }
-
-    private Bitmap loadFile(String path) {
-        try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(path, bounds);
-
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight);
-            return BitmapFactory.decodeFile(path, options);
-        } catch (Throwable t) {
-            Log.w(TAG, "load background file failed: " + path, t);
-            return null;
-        }
-    }
-
-    /**
-     * 带单张缓存的解码：4K 预览和 1080p UI 层用的是同一个原图文件，
-     * 冷启动/换图时不必解码两遍（一张 4K 图解码约 150-400ms）。
-     */
-    private Bitmap loadFileCached(String path) {
-        if (path == null) {
-            return null;
-        }
-        File file = new File(path);
-        String key = path + "|" + file.lastModified() + "|" + file.length();
-        if (key.equals(lastLoadedKey) && lastLoadedBitmap != null
-                && !lastLoadedBitmap.isRecycled()) {
-            return lastLoadedBitmap;
-        }
-        Bitmap bitmap = loadFile(path);
-        if (bitmap != null) {
-            lastLoadedBitmap = bitmap;
-            lastLoadedKey = key;
-        }
-        return bitmap;
-    }
-
-    private static int sampleSize(int width, int height) {
-        int sample = 1;
-        if (width > 0 && height > 0) {
-            while (width / (sample * 2) >= 1920 && height / (sample * 2) >= 1080) {
-                sample *= 2;
-            }
-        }
-        return sample;
-    }
-
-    private static void closeQuietly(InputStream input) {
-        if (input != null) {
-            try {
-                input.close();
-            } catch (IOException ignored) {
-            }
-        }
+        return imageLoader.loadBackground(item);
     }
 
     /** 自动轮播：两张图交叉淡入淡出，避免直接闪切 */
