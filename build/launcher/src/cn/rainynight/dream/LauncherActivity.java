@@ -102,10 +102,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-
 import org.json.JSONObject;
 
 /**
@@ -130,20 +126,20 @@ public class LauncherActivity extends Activity {
     private static final int REQ_READ_STORAGE = 4101;
     /** 桌面设置：图标大小预设（small / medium / large） */
     private static final String KEY_ICON_SIZE = "icon_size";
-    private static final String ICON_SIZE_SMALL = "small";
-    private static final String ICON_SIZE_MEDIUM = "medium";
-    private static final String ICON_SIZE_LARGE = "large";
+    static final String ICON_SIZE_SMALL = "small";
+    static final String ICON_SIZE_MEDIUM = "medium";
+    static final String ICON_SIZE_LARGE = "large";
     /** 桌面控件：时钟 / 天气 / Dock / 壁纸切换按钮 / 抽屉各自独立开关 */
-    private static final String KEY_WIDGET_CLOCK = "widget_clock";
-    private static final String KEY_WIDGET_WEATHER = "widget_weather";
-    private static final String KEY_WIDGET_DOCK = "widget_dock";
-    private static final String KEY_WIDGET_WALLPAPER_ARROWS = "widget_wallpaper_arrows";
-    private static final String KEY_WIDGET_DRAWER = "widget_drawer";
+    static final String KEY_WIDGET_CLOCK = "widget_clock";
+    static final String KEY_WIDGET_WEATHER = "widget_weather";
+    static final String KEY_WIDGET_DOCK = "widget_dock";
+    static final String KEY_WIDGET_WALLPAPER_ARROWS = "widget_wallpaper_arrows";
+    static final String KEY_WIDGET_DRAWER = "widget_drawer";
     /** 桌面控件显示方式：always 常驻 / hidden 隐藏 / auto 自动隐藏 */
     private static final String KEY_WIDGET_MODE = "widget_mode";
-    private static final String WIDGET_MODE_ALWAYS = "always";
-    private static final String WIDGET_MODE_HIDDEN = "hidden";
-    private static final String WIDGET_MODE_AUTO = "auto";
+    static final String WIDGET_MODE_ALWAYS = "always";
+    static final String WIDGET_MODE_HIDDEN = "hidden";
+    static final String WIDGET_MODE_AUTO = "auto";
     /** 自动隐藏：桌面空闲多久后收起控件 */
     private static final long WIDGET_AUTO_HIDE_MS = 30 * 1000L;
     /** 自动隐藏/恢复时控件的淡入淡出时长 */
@@ -184,10 +180,6 @@ public class LauncherActivity extends Activity {
     private static final String KEY_WALLPAPER_CLEARED = "wallpaper_cleared";
     private static final String TYPE_IMAGE = "image";
     private static final String TYPE_VIDEO = "video";
-    private static final int MANAGER_IMAGES = 0;
-    private static final int MANAGER_VIDEOS = 1;
-    /** 壁纸管理网格每页数量：6 列 × 3 行，正好一屏，翻页即可换一整屏 */
-    private static final int MANAGER_PAGE_SIZE = 18;
 
     /** 4K 静态壁纸：设备端编码缓存（原图目录见 WallpaperStore.STATIC_DIR） */
     private static final String FOUR_K_CACHE_DIR = "4k_cache";
@@ -411,7 +403,6 @@ public class LauncherActivity extends Activity {
     /** 桌面是否在前台：后台时导入结束不要偷偷恢复视频 */
     private boolean uiForeground = true;
     private int videoPlayToken;
-    private int managerType = MANAGER_IMAGES;
     private boolean cacheCleanupStarted;
     private boolean fourKUiAnimationDone;
     private boolean fourKVideoReady;
@@ -467,26 +458,7 @@ public class LauncherActivity extends Activity {
     private boolean returnFocusToArrows;
 
     /** 壁纸管理页（全屏浮层） */
-    private FrameLayout managerModule;
-    private GridView managerGrid;
-    private TextView managerStats;
-    private TextView managerEmpty;
-    private TextView managerImportButton;
-    private TextView managerCacheButton;
-    private TextView managerCloseButton;
-    private LinearLayout managerTabRow;
-    private LinearLayout managerTabGroup;
-    private TextView managerTabImage;
-    private TextView managerTabVideo;
-    /** 分页选择条：上一页 / 第 X/Y 页（可打开页码选择）/ 下一页 */
-    private LinearLayout managerPagerRow;
-    private TextView managerPrevPageButton;
-    private TextView managerPageButton;
-    private TextView managerNextPageButton;
-    private WallpaperAdapter managerAdapter;
-    private boolean managerOpen;
-    /** 壁纸网格当前页（从 0 开始） */
-    private int managerPage;
+    private WallpaperManagerPage wallpaperManager;
     /** 缩略图缓存：key = 文件名|stamp；按访问顺序保留最近 64 张，壁纸再多也不会无限涨内存 */
     private final Map<String, Bitmap> thumbnailCache =
             new LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
@@ -496,35 +468,12 @@ public class LauncherActivity extends Activity {
                 }
             };
 
-    /** 远程导入页（局域网 HTTP 上传，全屏浮层，盖在管理页上面） */
     /** 桌面设置页（全屏浮层） */
-    private FrameLayout settingsModule;
-    private TextView settingsNavIconSize;
-    private TextView settingsSmallButton;
-    private TextView settingsMediumButton;
-    private TextView settingsLargeButton;
-    private TextView settingsIconDesc;
-    private TextView settingsNavWidgets;
-    private LinearLayout settingsIconPage;
-    private LinearLayout settingsWidgetPage;
-    private LinearLayout settingsWidgetFirstRow;
-    private TextView settingsModeAlways;
-    private TextView settingsModeHidden;
-    private TextView settingsModeAuto;
-    /** 当前选中的二级页：icons / widgets */
-    private String settingsSection = "icons";
-    private boolean settingsOpen;
+    private DesktopSettingsPage settingsPage;
+    /** 远程导入页（局域网 HTTP 上传，全屏浮层，盖在管理页上面） */
+    private RemoteImportPage remotePage;
     /** 当前图标大小预设：small / medium / large */
     private String iconSizePreset = ICON_SIZE_MEDIUM;
-
-    private FrameLayout remoteModule;
-    private TextView remoteUrlView;
-    private ImageView remoteQrView;
-    private TextView remoteStatusView;
-    private TextView remoteBackButton;
-    private Switch remoteKeepSwitch;
-    private RemoteImportServer remoteServer;
-    private boolean remoteOpen;
 
     private final Handler handler = new Handler();
     private boolean drawerOpen;
@@ -535,12 +484,12 @@ public class LauncherActivity extends Activity {
     private boolean firstResume = true;
     private int screenHeight;
 
-    private int dp(float v) {
+    int dp(float v) {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     /** 当前图标边长（dp）：小 40 / 中 50 / 大 60 */
-    private int iconSizeDp() {
+    int iconSizeDp() {
         if (ICON_SIZE_SMALL.equals(iconSizePreset)) {
             return 40;
         }
@@ -551,7 +500,7 @@ public class LauncherActivity extends Activity {
     }
 
     /** Dock 图标数量与抽屉每行列数：小 8 / 中 7 / 大 6 */
-    private int iconsPerRow() {
+    int iconsPerRow() {
         if (ICON_SIZE_SMALL.equals(iconSizePreset)) {
             return 8;
         }
@@ -974,16 +923,16 @@ public class LauncherActivity extends Activity {
         menuModule.setTranslationY(-dp(MENU_HEIGHT_DP));
 
         // 壁纸管理页：全屏浮层，盖住菜单和桌面
-        buildWallpaperManager();
-        root.addView(managerModule, matchParent());
+        wallpaperManager = new WallpaperManagerPage(this);
+        root.addView(wallpaperManager.getView(), matchParent());
 
         // 远程导入页：局域网 HTTP 上传，盖在管理页上面
-        buildRemoteImportPage();
-        root.addView(remoteModule, matchParent());
+        remotePage = new RemoteImportPage(this);
+        root.addView(remotePage.getView(), matchParent());
 
         // 桌面设置页：全屏浮层
-        buildDesktopSettings();
-        root.addView(settingsModule, matchParent());
+        settingsPage = new DesktopSettingsPage(this);
+        root.addView(settingsPage.getView(), matchParent());
 
         startupBlackout = new View(this);
         startupBlackout.setBackgroundColor(Color.BLACK);
@@ -1021,7 +970,7 @@ public class LauncherActivity extends Activity {
         handleDebugWallpaperIntent(getIntent());
         if (getIntent() != null && getIntent().getBooleanExtra("wallpaper_manager", false)) {
             if ("video".equals(getIntent().getStringExtra("manager_tab"))) {
-                setManagerType(MANAGER_VIDEOS);
+                setManagerType(WallpaperManagerPage.VIDEOS);
             }
             handler.postDelayed(new Runnable() {
                 @Override
@@ -1476,7 +1425,7 @@ public class LauncherActivity extends Activity {
      * playVideoWallpaper 里还有 3 秒看门狗兜底，真卡黑屏会重试一次再退回图片模式。
      */
     private void restoreVideoWallpaperOnForeground() {
-        if (managerOpen || remoteOpen) {
+        if (isManagerOpen() || isRemoteOpen()) {
             // 管理页/远程页还盖着桌面：保持暂停，等页面关闭时再续播或重播
             Log.i(TAG, "skip video restore while manager/remote page open");
             return;
@@ -2626,7 +2575,7 @@ public class LauncherActivity extends Activity {
     }
 
     /** 设置项整行：左侧文字、右侧开关；焦点落在整行上，聚焦时整行高亮 */
-    private LinearLayout makeSettingsRow(String label, boolean checked,
+    LinearLayout makeSettingsRow(String label, boolean checked,
             android.widget.CompoundButton.OnCheckedChangeListener listener) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -2666,14 +2615,14 @@ public class LauncherActivity extends Activity {
         return row;
     }
 
-    private LinearLayout.LayoutParams settingsRowLp() {
+    LinearLayout.LayoutParams settingsRowLp() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(4);
         return lp;
     }
 
-    private void showBackgroundSettings() {
+    void showBackgroundSettings() {
         loadPlaybackSettings();
 
         LinearLayout box = new LinearLayout(this);
@@ -2981,300 +2930,11 @@ public class LauncherActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
     }
 
-    // ---------- 壁纸管理页 ----------
-
-    private void buildWallpaperManager() {
-        managerModule = new FrameLayout(this);
-        managerModule.setBackgroundColor(0xFF0B1017);
-        managerModule.setVisibility(View.GONE);
-        managerModule.setClickable(true);
-
-        LinearLayout column = new LinearLayout(this);
-        column.setOrientation(LinearLayout.VERTICAL);
-        // 底部少留 8dp：状态栏文字垂直居中，文字底边到屏幕的距离才和左右留白一致
-        column.setPadding(dp(28), dp(28), dp(28), dp(20));
-        managerModule.addView(column, matchParent());
-
-        TextView title = new TextView(this);
-        title.setText("壁纸管理");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        column.addView(title);
-
-        // tab 行：左边「静态壁纸 / 动态壁纸」，右边「导入 / 清空缓存 / 远程导入 / 播放设置 / 关闭」
-        managerTabRow = new LinearLayout(this);
-        managerTabRow.setOrientation(LinearLayout.HORIZONTAL);
-        managerTabRow.setGravity(Gravity.CENTER_VERTICAL);
-        managerTabRow.setPadding(0, dp(10), 0, 0);
-        // 两个 tab 拼成一个整块（无间隙的分段控件）
-        managerTabGroup = new LinearLayout(this);
-        managerTabGroup.setOrientation(LinearLayout.HORIZONTAL);
-        // 圆形只由两个 tab 自己负责，整组背景保持透明，避免圆角外露出直角底色
-        managerTabGroup.setBackgroundColor(Color.TRANSPARENT);
-        managerTabImage = makeManagerTab("静态壁纸", MANAGER_IMAGES);
-        managerTabVideo = makeManagerTab("动态壁纸", MANAGER_VIDEOS);
-        managerTabGroup.addView(managerTabImage);
-        managerTabGroup.addView(managerTabVideo);
-        LinearLayout.LayoutParams tabGroupLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
-        tabGroupLp.rightMargin = dp(16);
-        managerTabRow.addView(managerTabGroup, tabGroupLp);
-
-        column.addView(managerTabRow);
-
-        // 分页选择条：放在状态栏右侧，多页时显示，可快速翻页/跳到指定页
-        managerPagerRow = new LinearLayout(this);
-        managerPagerRow.setOrientation(LinearLayout.HORIZONTAL);
-        managerPagerRow.setGravity(Gravity.CENTER_VERTICAL);
-        managerPagerRow.setVisibility(View.GONE);
-        managerPrevPageButton = makeManagerButton("\u2039 上一页", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                jumpManagerPage(managerPage - 1);
-            }
-        });
-        managerPageButton = makeManagerButton("第 1/1 页", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showPagePicker();
-            }
-        });
-        managerNextPageButton = makeManagerButton("下一页 \u203A", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                jumpManagerPage(managerPage + 1);
-            }
-        });
-        managerPagerRow.addView(managerPrevPageButton);
-        managerPagerRow.addView(managerPageButton);
-        managerPagerRow.addView(managerNextPageButton);
-        // 状态栏里用更矮的分页按钮，避免把底部栏撑高
-        TextView[] pagerButtons = {managerPrevPageButton, managerPageButton, managerNextPageButton};
-        for (int i = 0; i < pagerButtons.length; i++) {
-            TextView button = pagerButtons[i];
-            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) button.getLayoutParams();
-            lp.height = dp(36);
-            lp.rightMargin = i == pagerButtons.length - 1 ? 0 : dp(8);
-            button.setLayoutParams(lp);
-            button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-            button.setPadding(dp(12), 0, dp(12), 0);
-            // 未聚焦时背景透明，只保留文字
-            button.setBackgroundColor(Color.TRANSPARENT);
-            button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-                @Override
-                public void onFocusChange(View v, boolean hasFocus) {
-                    if (hasFocus) {
-                        v.setBackgroundResource(R.drawable.dock_focus);
-                    } else {
-                        v.setBackgroundColor(Color.TRANSPARENT);
-                    }
-                }
-            });
-        }
-
-        // 分页条：↑ 回网格最后一行，↓ 没有可去的地方
-        View.OnKeyListener pagerKeys = new View.OnKeyListener() {
-            @Override
-            public boolean onKey(View v, int keyCode, KeyEvent event) {
-                if (event.getAction() != KeyEvent.ACTION_DOWN) {
-                    return false;
-                }
-                if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-                    if (managerGrid != null && managerAdapter != null
-                            && managerAdapter.getCount() > 0) {
-                        managerGrid.setSelection(managerAdapter.getCount() - 1);
-                        managerGrid.requestFocus();
-                    }
-                    return true;
-                }
-                return false;
-            }
-        };
-        for (int i = 0; i < managerPagerRow.getChildCount(); i++) {
-            managerPagerRow.getChildAt(i).setOnKeyListener(pagerKeys);
-        }
-
-        managerEmpty = new TextView(this);
-        managerEmpty.setText("还没有图片壁纸\n点下面「导入壁纸」，从 U 盘或本地存储添加");
-        managerEmpty.setTextColor(0xFF8FA0B3);
-        managerEmpty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        managerEmpty.setGravity(Gravity.CENTER);
-        managerEmpty.setVisibility(View.GONE);
-        column.addView(managerEmpty, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        managerGrid = new GridView(this) {
-            @Override
-            public boolean dispatchKeyEvent(KeyEvent event) {
-                int key = event.getKeyCode();
-                // 同一行内左右移动；到行首再按左留在原地，避免跨行走位
-                if (key == KeyEvent.KEYCODE_DPAD_LEFT
-                        && getSelectedItemPosition() % getNumColumns() == 0) {
-                    return false;
-                }
-                if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                    int selected = getSelectedItemPosition();
-                    int cols = getNumColumns();
-                    // 第一行再按 ↑：回到顶部 tab（分页条在底部，不再走分页条）
-                    if (key == KeyEvent.KEYCODE_DPAD_UP && selected >= 0 && selected < cols) {
-                        if (managerType == MANAGER_IMAGES && managerTabImage != null) {
-                            managerTabImage.requestFocus();
-                        } else if (managerTabVideo != null) {
-                            managerTabVideo.requestFocus();
-                        }
-                        return true;
-                    }
-                    // 最后一行再按 ↓：把焦点交给底部右侧的分页选择器，不自动换页
-                    if (key == KeyEvent.KEYCODE_DPAD_DOWN && selected >= 0) {
-                        int rows = (getCount() + cols - 1) / cols;
-                        if (rows > 0 && selected / cols == rows - 1) {
-                            if (managerPagerRow != null
-                                    && managerPagerRow.getVisibility() == View.VISIBLE) {
-                                managerPageButton.requestFocus();
-                                return true;
-                            }
-                        }
-                    }
-                }
-                return super.dispatchKeyEvent(event);
-            }
-        };
-        managerGrid.setNumColumns(6);
-        managerGrid.setHorizontalSpacing(dp(12));
-        managerGrid.setVerticalSpacing(dp(12));
-        managerGrid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
-        managerGrid.setSelector(android.R.color.transparent);
-        managerGrid.setClipToPadding(false);
-        managerGrid.setPadding(0, dp(6), 0, dp(6));
-        managerAdapter = new WallpaperAdapter();
-        managerGrid.setAdapter(managerAdapter);
-        managerGrid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
-            @Override
-            public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                showWallpaperActions(managerPage * MANAGER_PAGE_SIZE + position);
-            }
-        });
-        managerGrid.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                updateManagerGridSelection(true);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-                updateManagerGridSelection(false);
-            }
-        });
-        managerGrid.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                updateManagerGridSelection(hasFocus);
-            }
-        });
-        LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        gridLp.topMargin = dp(10);
-        column.addView(managerGrid, gridLp);
-
-        managerImportButton = makeManagerButton("导入壁纸", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showImportChooser();
-            }
-        });
-        managerTabRow.addView(managerImportButton);
-        managerCacheButton = makeManagerButton("清空缓存", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                confirmClearAllCache();
-            }
-        });
-        managerTabRow.addView(managerCacheButton);
-        managerTabRow.addView(makeManagerButton("背景设置", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showBackgroundSettings();
-            }
-        }));
-
-        // 状态栏：左边数量/当前壁纸，右边分页选择器
-        managerStats = new TextView(this);
-        managerStats.setTextColor(0xFFB8C4D2);
-        managerStats.setFocusable(false);
-        managerStats.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        managerStats.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        managerStats.setEllipsize(TextUtils.TruncateAt.END);
-        managerStats.setSingleLine(true);
-        LinearLayout statusRow = new LinearLayout(this);
-        statusRow.setOrientation(LinearLayout.HORIZONTAL);
-        statusRow.setGravity(Gravity.CENTER_VERTICAL);
-        statusRow.setPadding(0, dp(10), 0, 0);
-        statusRow.addView(managerStats, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        statusRow.addView(managerPagerRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        column.addView(statusRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        // tab 行 / 功能栏按 ↓ 一律把焦点交给壁纸网格
-        View.OnKeyListener downToGrid = new View.OnKeyListener() {
-            @Override
-            public boolean onKey(View v, int keyCode, KeyEvent event) {
-                if (event.getAction() != KeyEvent.ACTION_DOWN
-                        || keyCode != KeyEvent.KEYCODE_DPAD_DOWN) {
-                    return false;
-                }
-                if (managerGrid == null || activeManagerPageItems().isEmpty()) {
-                    return false;
-                }
-                // 从 tab 进入网格不自动定位当前壁纸，直接落在本页第一张
-                focusManagerGridTop();
-                return true;
-            }
-        };
-        for (int i = 0; i < managerTabRow.getChildCount(); i++) {
-            managerTabRow.getChildAt(i).setOnKeyListener(downToGrid);
-        }
-        if (managerTabGroup != null) {
-            for (int i = 0; i < managerTabGroup.getChildCount(); i++) {
-                managerTabGroup.getChildAt(i).setOnKeyListener(downToGrid);
-            }
-        }
-    }
-
-    private TextView makeManagerButton(String label, final View.OnClickListener listener) {
-        TextView button = new TextView(this);
-        button.setText(label);
-        button.setTextColor(Color.WHITE);
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        button.setGravity(Gravity.CENTER);
-        button.setBackgroundResource(R.drawable.tile_bg);
-        button.setFocusable(true);
-        button.setFocusableInTouchMode(true);
-        button.setPadding(dp(14), 0, dp(14), 0);
-        button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus
-                        ? R.drawable.dock_focus : R.drawable.tile_bg);
-            }
-        });
-        button.setOnClickListener(listener);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
-        lp.rightMargin = dp(10);
-        button.setLayoutParams(lp);
-        return button;
-    }
-
     private void openWallpaperManager() {
-        if (managerModule == null || managerOpen) {
+        if (wallpaperManager == null || isManagerOpen()) {
             return;
         }
         hideMenuImmediately();
-        managerOpen = true;
-        managerPage = 0;
         // 管理页完全盖住桌面，视频看不见；先暂停解码，
         // 避免导入大文件时解码器和磁盘写入、媒体扫描抢资源导致卡死。
         if (videoWallpaperMode && wallpaperVideo != null) {
@@ -3292,37 +2952,23 @@ public class LauncherActivity extends Activity {
         reloadBackgrounds();
         reload4KBackgrounds();
         reloadVideoBackgrounds();
-        managerGrid.setAdapter(managerAdapter);
-        managerModule.setVisibility(View.VISIBLE);
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
         if (menuModule != null) {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
-        refreshManager();
-        // 默认焦点落在当前分栏的 tab，不直接进网格
-        if (managerType == MANAGER_VIDEOS && managerTabVideo != null) {
-            managerTabVideo.requestFocus();
-        } else if (managerTabImage != null) {
-            managerTabImage.requestFocus();
-        }
+        wallpaperManager.open();
         pruneThumbCacheAsync();
         Log.i(TAG, "wallpaper manager opened, images=" + fourKItems.size()
                 + " videos=" + videoItems.size());
     }
 
     private void closeWallpaperManager() {
-        if (!managerOpen) {
+        if (!isManagerOpen()) {
             return;
         }
-        managerOpen = false;
-        if (managerModule != null) {
-            managerModule.setVisibility(View.GONE);
-        }
-        if (managerGrid != null) {
-            managerGrid.setAdapter(null);
-        }
+        wallpaperManager.close();
         // 内存缓存留着，下次进来直接命中；只有条目太多时才整体释放
         if (thumbnailCache.size() > 200) {
             thumbnailCache.clear();
@@ -3361,355 +3007,7 @@ public class LauncherActivity extends Activity {
 
     // ---------- 桌面设置页 ----------
 
-    private void buildDesktopSettings() {
-        settingsModule = new FrameLayout(this);
-        settingsModule.setBackgroundColor(0xFF0B1017);
-        settingsModule.setVisibility(View.GONE);
-        settingsModule.setClickable(true);
-
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.HORIZONTAL);
-        page.setPadding(dp(28), dp(28), dp(28), dp(20));
-        settingsModule.addView(page, matchParent());
-
-        // ---------- 左侧：一级菜单 ----------
-        // 左侧：右侧 = 4 : 6
-        LinearLayout nav = new LinearLayout(this);
-        nav.setOrientation(LinearLayout.VERTICAL);
-        page.addView(nav, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.MATCH_PARENT, 4f));
-
-        TextView title = new TextView(this);
-        title.setText("桌面设置");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setPadding(dp(16), 0, 0, dp(12));
-        nav.addView(title);
-
-        settingsNavIconSize = makeSettingsNavItem("图标尺寸", "icons");
-        nav.addView(settingsNavIconSize);
-        settingsNavWidgets = makeSettingsNavItem("桌面控件", "widgets");
-        nav.addView(settingsNavWidgets);
-
-        View divider = new View(this);
-        divider.setBackgroundColor(0xFF1F2A36);
-        page.addView(divider, new LinearLayout.LayoutParams(
-                dp(1), ViewGroup.LayoutParams.MATCH_PARENT));
-
-        // ---------- 右侧：二级内容 ----------
-        LinearLayout detail = new LinearLayout(this);
-        detail.setOrientation(LinearLayout.VERTICAL);
-        detail.setPadding(dp(36), 0, 0, 0);
-        page.addView(detail, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.MATCH_PARENT, 6f));
-
-        // ---- 页一：图标尺寸 ----
-        settingsIconPage = new LinearLayout(this);
-        settingsIconPage.setOrientation(LinearLayout.VERTICAL);
-        detail.addView(settingsIconPage, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        TextView section = new TextView(this);
-        section.setText("图标尺寸");
-        section.setTextColor(Color.WHITE);
-        section.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        section.setTypeface(Typeface.DEFAULT_BOLD);
-        settingsIconPage.addView(section);
-
-        TextView sectionDesc = new TextView(this);
-        sectionDesc.setText("调整 Dock 与抽屉的图标尺寸，每行数量会自动适配。");
-        sectionDesc.setTextColor(0xFF8FA0B3);
-        sectionDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        LinearLayout.LayoutParams sectionDescLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        sectionDescLp.topMargin = dp(8);
-        settingsIconPage.addView(sectionDesc, sectionDescLp);
-
-        // 分段按钮：具体尺寸
-        LinearLayout group = new LinearLayout(this);
-        group.setOrientation(LinearLayout.HORIZONTAL);
-        group.setBackgroundColor(0xFF141C27);
-        settingsSmallButton = makeIconSizeOption("40×40", ICON_SIZE_SMALL);
-        settingsMediumButton = makeIconSizeOption("50×50", ICON_SIZE_MEDIUM);
-        settingsLargeButton = makeIconSizeOption("60×60", ICON_SIZE_LARGE);
-        group.addView(settingsSmallButton);
-        group.addView(settingsMediumButton);
-        group.addView(settingsLargeButton);
-        LinearLayout.LayoutParams groupLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
-        groupLp.topMargin = dp(24);
-        settingsIconPage.addView(group, groupLp);
-
-        settingsIconDesc = new TextView(this);
-        settingsIconDesc.setTextColor(0xFF8FA0B3);
-        settingsIconDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        LinearLayout.LayoutParams descLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        descLp.topMargin = dp(18);
-        settingsIconPage.addView(settingsIconDesc, descLp);
-
-        // ---- 页二：桌面控件 ----
-        settingsWidgetPage = new LinearLayout(this);
-        settingsWidgetPage.setOrientation(LinearLayout.VERTICAL);
-        settingsWidgetPage.setVisibility(View.GONE);
-        detail.addView(settingsWidgetPage, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        TextView widgetTitle = new TextView(this);
-        widgetTitle.setText("桌面控件");
-        widgetTitle.setTextColor(Color.WHITE);
-        widgetTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        widgetTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        settingsWidgetPage.addView(widgetTitle);
-
-        TextView widgetDesc = new TextView(this);
-        widgetDesc.setText("选择桌面上要显示的元素，关闭后对应位置留空。");
-        widgetDesc.setTextColor(0xFF8FA0B3);
-        widgetDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        LinearLayout.LayoutParams widgetDescLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        widgetDescLp.topMargin = dp(8);
-        settingsWidgetPage.addView(widgetDesc, widgetDescLp);
-
-        settingsWidgetFirstRow = makeSettingsRow("时钟", widgetClock,
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton button,
-                            boolean checked) {
-                        widgetClock = checked;
-                        setWidgetFlag(KEY_WIDGET_CLOCK, checked);
-                        applyWidgetVisibility();
-                    }
-                });
-        settingsWidgetPage.addView(settingsWidgetFirstRow, settingsRowLp());
-
-        settingsWidgetPage.addView(makeSettingsRow("天气", widgetWeather,
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton button,
-                            boolean checked) {
-                        widgetWeather = checked;
-                        setWidgetFlag(KEY_WIDGET_WEATHER, checked);
-                        applyWidgetVisibility();
-                    }
-                }), settingsRowLp());
-
-        settingsWidgetPage.addView(makeSettingsRow("Dock 应用栏", widgetDock,
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton button,
-                            boolean checked) {
-                        widgetDock = checked;
-                        setWidgetFlag(KEY_WIDGET_DOCK, checked);
-                        applyWidgetVisibility();
-                    }
-                }), settingsRowLp());
-
-        settingsWidgetPage.addView(makeSettingsRow("壁纸切换按钮（◀ ▶）", widgetArrows,
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton button,
-                            boolean checked) {
-                        widgetArrows = checked;
-                        setWidgetFlag(KEY_WIDGET_WALLPAPER_ARROWS, checked);
-                        applyWidgetVisibility();
-                    }
-                }), settingsRowLp());
-
-        LinearLayout drawerRow = makeSettingsRow("抽屉（↓ 打开应用）", widgetDrawer,
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton button,
-                            boolean checked) {
-                        widgetDrawer = checked;
-                        setWidgetFlag(KEY_WIDGET_DRAWER, checked);
-                        applyWidgetVisibility();
-                    }
-                });
-        settingsWidgetPage.addView(drawerRow, settingsRowLp());
-
-        TextView modeTitle = new TextView(this);
-        modeTitle.setText("显示方式");
-        modeTitle.setTextColor(Color.WHITE);
-        modeTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        modeTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams modeTitleLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        modeTitleLp.topMargin = dp(20);
-        settingsWidgetPage.addView(modeTitle, modeTitleLp);
-
-        LinearLayout modeGroup = new LinearLayout(this);
-        modeGroup.setOrientation(LinearLayout.HORIZONTAL);
-        modeGroup.setBackgroundColor(0xFF141C27);
-        settingsModeAlways = makeWidgetModeOption("常驻", WIDGET_MODE_ALWAYS);
-        settingsModeHidden = makeWidgetModeOption("隐藏", WIDGET_MODE_HIDDEN);
-        settingsModeAuto = makeWidgetModeOption("自动隐藏", WIDGET_MODE_AUTO);
-        modeGroup.addView(settingsModeAlways);
-        modeGroup.addView(settingsModeHidden);
-        modeGroup.addView(settingsModeAuto);
-        LinearLayout.LayoutParams modeGroupLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
-        modeGroupLp.topMargin = dp(10);
-        settingsWidgetPage.addView(modeGroup, modeGroupLp);
-
-        TextView modeDesc = new TextView(this);
-        modeDesc.setText("自动隐藏：桌面空闲 30 秒后隐藏全部控件，按任意键或触摸后恢复。");
-        modeDesc.setTextColor(0xFF8FA0B3);
-        modeDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        LinearLayout.LayoutParams modeDescLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        modeDescLp.topMargin = dp(12);
-        settingsWidgetPage.addView(modeDesc, modeDescLp);
-
-        // 左右方向键在菜单与内容之间切换
-        settingsNavIconSize.setId(0x2010);
-        settingsSmallButton.setId(0x2011);
-        settingsNavWidgets.setId(0x2012);
-        settingsWidgetFirstRow.setId(0x2013);
-        drawerRow.setId(0x2014);
-        settingsModeAlways.setId(0x2015);
-        settingsModeHidden.setId(0x2016);
-        settingsModeAuto.setId(0x2017);
-        settingsNavIconSize.setNextFocusRightId(0x2011);
-        settingsWidgetFirstRow.setNextFocusLeftId(0x2012);
-        settingsNavWidgets.setNextFocusRightId(0x2013);
-        settingsSmallButton.setNextFocusLeftId(0x2010);
-        // 一级菜单最后一项按下键停住，避免直接跳进右侧内容
-        settingsNavWidgets.setNextFocusDownId(0x2012);
-        // 显示方式一行：下键固定落到「常驻」，左右在三个选项之间移动
-        drawerRow.setNextFocusDownId(0x2015);
-        settingsModeAlways.setNextFocusUpId(0x2014);
-        settingsModeHidden.setNextFocusUpId(0x2014);
-        settingsModeAuto.setNextFocusUpId(0x2014);
-        settingsModeAlways.setNextFocusLeftId(0x2012);
-        settingsModeAlways.setNextFocusRightId(0x2016);
-        settingsModeHidden.setNextFocusLeftId(0x2015);
-        settingsModeHidden.setNextFocusRightId(0x2017);
-        settingsModeAuto.setNextFocusLeftId(0x2016);
-        settingsModeAuto.setNextFocusRightId(0x2017);
-    }
-
-    private TextView makeSettingsNavItem(String label, final String section) {
-        TextView item = new TextView(this);
-        item.setText(label);
-        item.setTextColor(Color.WHITE);
-        item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        item.setGravity(Gravity.CENTER_VERTICAL);
-        item.setPadding(dp(16), 0, dp(16), 0);
-        item.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        item.setFocusable(true);
-        item.setFocusableInTouchMode(true);
-        item.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                // 焦点移到哪一项，右侧就切到对应的二级页
-                if (hasFocus) {
-                    selectSettingsSection(section);
-                }
-                updateSettingsNav();
-            }
-        });
-        item.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // 点击后把焦点交给右侧页面的第一项
-                selectSettingsSection(section);
-                if ("icons".equals(section) && settingsSmallButton != null) {
-                    settingsSmallButton.requestFocus();
-                } else if ("widgets".equals(section) && settingsWidgetFirstRow != null) {
-                    settingsWidgetFirstRow.requestFocus();
-                }
-            }
-        });
-        return item;
-    }
-
-    private void selectSettingsSection(String section) {
-        if (section == null) {
-            return;
-        }
-        settingsSection = section;
-        boolean icons = "icons".equals(section);
-        if (settingsIconPage != null) {
-            settingsIconPage.setVisibility(icons ? View.VISIBLE : View.GONE);
-        }
-        if (settingsWidgetPage != null) {
-            settingsWidgetPage.setVisibility(icons ? View.GONE : View.VISIBLE);
-        }
-        updateSettingsNav();
-    }
-
-    /** 一级菜单：选中项保持深色底，聚焦时高亮 */
-    private void updateSettingsNav() {
-        applySettingsNavStyle(settingsNavIconSize, "icons");
-        applySettingsNavStyle(settingsNavWidgets, "widgets");
-    }
-
-    private void applySettingsNavStyle(TextView item, String section) {
-        if (item == null) {
-            return;
-        }
-        if (item.isFocused()) {
-            item.setBackgroundResource(R.drawable.dock_focus);
-        } else if (section.equals(settingsSection)) {
-            item.setBackgroundColor(0xFF1E2A38);
-        } else {
-            item.setBackgroundColor(Color.TRANSPARENT);
-        }
-    }
-
-    private TextView makeIconSizeOption(String label, final String preset) {
-        TextView option = new TextView(this);
-        option.setText(label);
-        option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        option.setGravity(Gravity.CENTER);
-        option.setFocusable(true);
-        option.setFocusableInTouchMode(true);
-        option.setPadding(dp(18), 0, dp(18), 0);
-        option.setLayoutParams(new LinearLayout.LayoutParams(dp(120), dp(44)));
-        option.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                updateIconSizeOptions();
-            }
-        });
-        option.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setIconSizePreset(preset);
-            }
-        });
-        return option;
-    }
-
-    private void updateIconSizeOptions() {
-        applyIconSizeOption(settingsSmallButton, ICON_SIZE_SMALL);
-        applyIconSizeOption(settingsMediumButton, ICON_SIZE_MEDIUM);
-        applyIconSizeOption(settingsLargeButton, ICON_SIZE_LARGE);
-        if (settingsIconDesc != null) {
-            settingsIconDesc.setText("当前：" + iconSizeDp() + "×" + iconSizeDp()
-                    + " · Dock 与抽屉每行 " + iconsPerRow() + " 个");
-        }
-        updateSettingsNav();
-    }
-
-    private void applyIconSizeOption(TextView option, String preset) {
-        if (option == null) {
-            return;
-        }
-        boolean selected = preset.equals(iconSizePreset);
-        boolean focused = option.isFocused();
-        if (focused) {
-            option.setBackgroundResource(R.drawable.dock_focus);
-        } else {
-            option.setBackgroundColor(selected ? 0xFF1E2A38 : 0xFF141C27);
-        }
-        option.setTextColor(selected || focused ? Color.WHITE : 0xFF8FA0B3);
-    }
-
-    private void setIconSizePreset(String preset) {
+    void setIconSizePreset(String preset) {
         if (!preset.equals(iconSizePreset)) {
             iconSizePreset = preset;
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
@@ -3726,256 +3024,135 @@ public class LauncherActivity extends Activity {
             Log.i(TAG, "icon size changed: " + preset + " (" + iconSizeDp()
                     + "dp, " + iconsPerRow() + " per row)");
         }
-        updateIconSizeOptions();
     }
 
-    private TextView makeWidgetModeOption(String label, final String mode) {
-        TextView option = new TextView(this);
-        option.setText(label);
-        option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        option.setGravity(Gravity.CENTER);
-        option.setFocusable(true);
-        option.setFocusableInTouchMode(true);
-        option.setPadding(dp(18), 0, dp(18), 0);
-        option.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
-        option.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                updateWidgetModeOptions();
-            }
-        });
-        option.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setWidgetMode(mode);
-            }
-        });
-        return option;
+    boolean isRemoteKeepRunning() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_REMOTE_KEEP, false);
     }
 
-    private void updateWidgetModeOptions() {
-        applyWidgetModeOption(settingsModeAlways, WIDGET_MODE_ALWAYS);
-        applyWidgetModeOption(settingsModeHidden, WIDGET_MODE_HIDDEN);
-        applyWidgetModeOption(settingsModeAuto, WIDGET_MODE_AUTO);
-    }
-
-    private void applyWidgetModeOption(TextView option, String mode) {
-        if (option == null) {
-            return;
+    void setRemoteKeepRunning(boolean keep) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_REMOTE_KEEP, keep).apply();
+        if (remotePage != null) {
+            remotePage.setKeepChecked(keep);
         }
-        boolean selected = mode.equals(widgetMode);
-        boolean focused = option.isFocused();
-        if (focused) {
-            option.setBackgroundResource(R.drawable.dock_focus);
-        } else {
-            option.setBackgroundColor(selected ? 0xFF1E2A38 : 0xFF141C27);
+        if (!keep && !isRemoteOpen() && remotePage != null) {
+            // 页面已关闭且关掉保持运行：立刻停服
+            remotePage.stopServer();
+            Log.i(TAG, "remote import server stopped by keep switch");
         }
-        option.setTextColor(selected || focused ? Color.WHITE : 0xFF8FA0B3);
+        Toast.makeText(this,
+                keep ? "已开启：关闭本页后服务继续运行" : "已关闭：离开本页即停止服务",
+                Toast.LENGTH_SHORT).show();
     }
+
+    // ---------- 页面委托：DesktopSettingsPage / RemoteImportPage 只负责界面 ----------
 
     private void openDesktopSettings() {
-        if (settingsModule == null || settingsOpen) {
-            return;
-        }
-        hideMenuImmediately();
-        settingsOpen = true;
-        updateIconSizeOptions();
-        selectSettingsSection(settingsSection);
-        updateWidgetModeOptions();
-        settingsModule.setVisibility(View.VISIBLE);
-        if (desktopModule != null) {
-            desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        }
-        if (menuModule != null) {
-            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        }
-        // 默认焦点落在左侧一级菜单，按右键进入右侧设置项
-        TextView navItem = "widgets".equals(settingsSection)
-                ? settingsNavWidgets : settingsNavIconSize;
-        if (navItem != null) {
-            navItem.requestFocus();
-        }
+        settingsPage.open();
     }
 
     private void closeDesktopSettings() {
-        if (!settingsOpen) {
-            return;
-        }
-        settingsOpen = false;
-        if (settingsModule != null) {
-            settingsModule.setVisibility(View.GONE);
-        }
-        if (desktopModule != null) {
-            desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
-        }
-        if (menuModule != null) {
-            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
-        }
-        focusFirstDockItem();
-        resetWidgetAutoHide();
-    }
-
-    // ---------- 远程导入（局域网 HTTP 上传） ----------
-
-    private void buildRemoteImportPage() {
-        remoteModule = new FrameLayout(this);
-        remoteModule.setBackgroundColor(0xFF0B1017);
-        remoteModule.setVisibility(View.GONE);
-        remoteModule.setClickable(true);
-
-        // 左右两栏：左侧地址/开关/返回，右侧二维码，避免竖排堆叠过挤
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.HORIZONTAL);
-        page.setGravity(Gravity.CENTER_VERTICAL);
-        page.setPadding(dp(64), dp(30), dp(64), dp(26));
-        remoteModule.addView(page, matchParent());
-
-        LinearLayout column = new LinearLayout(this);
-        column.setOrientation(LinearLayout.VERTICAL);
-        column.setGravity(Gravity.START);
-        LinearLayout.LayoutParams columnParams = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        columnParams.rightMargin = dp(36);
-        page.addView(column, columnParams);
-
-        TextView title = new TextView(this);
-        title.setText("远程导入");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        column.addView(title, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        TextView hint = new TextView(this);
-        hint.setText("手机扫码，或在同一 WiFi 下用电脑/手机浏览器打开下面的地址，即可上传、切换、删除壁纸。\n"
-                + "上传后需要点「设为当前」才会换画面；默认离开本页会关闭服务。");
-        hint.setTextColor(0xFFB8C4D2);
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        hint.setLineSpacing(dp(6), 1f);
-        LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hintParams.topMargin = dp(10);
-        column.addView(hint, hintParams);
-
-        remoteUrlView = new TextView(this);
-        remoteUrlView.setText("正在启动…");
-        remoteUrlView.setTextColor(0xFF4C8DFF);
-        remoteUrlView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
-        remoteUrlView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        remoteUrlView.setGravity(Gravity.CENTER);
-        remoteUrlView.setPadding(dp(22), dp(10), dp(22), dp(10));
-        remoteUrlView.setBackgroundColor(0xFF131B26);
-        LinearLayout.LayoutParams urlParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        urlParams.topMargin = dp(18);
-        column.addView(remoteUrlView, urlParams);
-
-        remoteStatusView = new TextView(this);
-        remoteStatusView.setText("等待连接…");
-        remoteStatusView.setTextColor(0xFF7F8FA3);
-        remoteStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        remoteStatusView.setPadding(0, dp(10), 0, 0);
-        column.addView(remoteStatusView);
-
-        // 保持服务运行：关闭本页后浏览器仍可继续导入/管理
-        LinearLayout keepRow = new LinearLayout(this);
-        keepRow.setOrientation(LinearLayout.HORIZONTAL);
-        keepRow.setGravity(Gravity.CENTER_VERTICAL);
-        keepRow.setPadding(dp(16), dp(6), dp(16), dp(6));
-        keepRow.setFocusable(true);
-        keepRow.setFocusableInTouchMode(true);
-        TextView keepLabel = new TextView(this);
-        keepLabel.setText("关闭本页后保持服务运行");
-        keepLabel.setTextColor(0xFFB8C4D2);
-        keepLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        keepRow.addView(keepLabel, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        remoteKeepSwitch = new Switch(this);
-        remoteKeepSwitch.setFocusable(false);
-        remoteKeepSwitch.setClickable(false);
-        remoteKeepSwitch.setChecked(isRemoteKeepRunning());
-        keepRow.addView(remoteKeepSwitch);
-        keepRow.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setRemoteKeepRunning(!isRemoteKeepRunning());
-            }
-        });
-        keepRow.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
-            }
-        });
-        LinearLayout.LayoutParams keepParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        keepParams.topMargin = dp(18);
-        column.addView(keepRow, keepParams);
-
-        View spacer = new View(this);
-        column.addView(spacer, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.START);
-        remoteBackButton = makeManagerButton("返回", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                closeRemoteImport();
-            }
-        });
-        actions.addView(remoteBackButton);
-        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        actionsParams.topMargin = dp(20);
-        column.addView(actions, actionsParams);
-
-        remoteQrView = new ImageView(this);
-        remoteQrView.setVisibility(View.GONE);
-        remoteQrView.setBackgroundColor(Color.WHITE);
-        remoteQrView.setPadding(dp(12), dp(12), dp(12), dp(12));
-        remoteQrView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        LinearLayout.LayoutParams qrParams = new LinearLayout.LayoutParams(dp(288), dp(288));
-        qrParams.gravity = Gravity.CENTER_VERTICAL;
-        page.addView(remoteQrView, qrParams);
-    }
-
-    /** 把当前地址编码成二维码，遥控器扫不到也没关系，地址仍然在下面。 */
-    private void updateRemoteQr(String url) {
-        if (remoteQrView == null) {
-            return;
-        }
-        try {
-            QrCode.Symbol symbol = QrCode.encode(url, QrCode.EC_M);
-            // 静区只留 2 个模块（标准建议 4），把省下的空间给内容区；外侧白卡片再补一点边
-            final int quiet = 2;
-            int scale = QrCode.scaleFor(symbol, dp(264), quiet);
-            int[] pixels = QrCode.renderPixels(symbol, quiet, scale, 0xFF000000, 0xFFFFFFFF);
-            int px = symbol.size + quiet * 2;
-            px *= scale;
-            Bitmap bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888);
-            bitmap.setPixels(pixels, 0, px, 0, 0, px, px);
-            remoteQrView.setImageBitmap(bitmap);
-            remoteQrView.setVisibility(View.VISIBLE);
-            Log.i(TAG, "remote import qr: v" + symbol.version + " " + px + "px mask=" + symbol.mask);
-        } catch (RuntimeException e) {
-            remoteQrView.setVisibility(View.GONE);
-            Log.w(TAG, "remote import qr failed: " + e.getMessage());
-        }
+        settingsPage.close();
     }
 
     private void openRemoteImport() {
-        if (remoteModule == null || remoteOpen) {
-            return;
+        remotePage.open();
+    }
+
+    private void closeRemoteImport() {
+        remotePage.close();
+    }
+
+    boolean isRemoteOpen() {
+        return remotePage != null && remotePage.isOpen();
+    }
+
+    boolean isSettingsOpen() {
+        return settingsPage != null && settingsPage.isOpen();
+    }
+
+    boolean isManagerOpen() {
+        return wallpaperManager != null && wallpaperManager.isOpen();
+    }
+
+    // ---------- 壁纸管理页需要的宿主数据与动作 ----------
+
+    /** 管理页 / 远程页共用的胶囊按钮 */
+    TextView makeManagerButton(String label, final View.OnClickListener listener) {
+        TextView button = new TextView(this);
+        button.setText(label);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        button.setGravity(Gravity.CENTER);
+        button.setBackgroundResource(R.drawable.tile_bg);
+        button.setFocusable(true);
+        button.setFocusableInTouchMode(true);
+        button.setPadding(dp(14), 0, dp(14), 0);
+        button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                v.setBackgroundResource(hasFocus
+                        ? R.drawable.dock_focus : R.drawable.tile_bg);
+            }
+        });
+        button.setOnClickListener(listener);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
+        lp.rightMargin = dp(10);
+        button.setLayoutParams(lp);
+        return button;
+    }
+
+    List<BackgroundItem> managerImageItems() {
+        return fourKItems;
+    }
+
+    List<BackgroundItem> managerVideoItems() {
+        return videoItems;
+    }
+
+    /** 视频模式下静态栏没有「当前」项 */
+    String managerImageCurrentName() {
+        return videoWallpaperMode ? null : current4KName;
+    }
+
+    /** 图片模式下动态栏没有「当前」项 */
+    String managerVideoCurrentName() {
+        return videoWallpaperMode ? currentVideoName : null;
+    }
+
+    int managerImageIndex() {
+        return fourKIndex;
+    }
+
+    int managerVideoIndex() {
+        return videoIndex;
+    }
+
+    private void setManagerType(int type) {
+        if (wallpaperManager != null) {
+            wallpaperManager.setType(type);
         }
-        remoteOpen = true;
-        remoteModule.setVisibility(View.VISIBLE);
-        remoteModule.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+    }
+
+    private void refreshManager() {
+        if (wallpaperManager != null) {
+            wallpaperManager.refresh();
+        }
+    }
+
+    private void keepManagerTabFocus(int selection) {
+        if (wallpaperManager != null) {
+            wallpaperManager.keepTabFocus(selection);
+        }
+    }
+
+    /** 远程页进入全屏：挡住下层焦点，并保持亮屏 */
+    void remotePageEnterFullscreen() {
         // 远程页在最上层，必须挡住管理页/桌面的焦点，否则遥控器会点到下面的网格
-        if (managerModule != null) {
-            managerModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        if (wallpaperManager != null) {
+            wallpaperManager.getView().setDescendantFocusability(
+                    ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
         if (desktopModule != null) {
             desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
@@ -3984,74 +3161,16 @@ public class LauncherActivity extends Activity {
             menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        if (remoteServer == null) {
-            remoteServer = new RemoteImportServer(new RemoteImportHostBridge(this));
-            remoteServer.setAssetOpener(new RemoteImportServer.AssetOpener() {
-                @Override
-                public InputStream open(String assetName) throws IOException {
-                    return getAssets().open(assetName);
-                }
-            });
-        }
-        if (remoteServer.start(8080)) {
-            String ip = localIpv4();
-            String url = "http://" + (ip == null ? "127.0.0.1" : ip)
-                    + ":" + remoteServer.getPort() + "/";
-            remoteUrlView.setText(url);
-            if (ip == null) {
-                // 没有局域网地址时，二维码指向 127.0.0.1，手机扫了也没用
-                remoteQrView.setVisibility(View.GONE);
-            } else {
-                updateRemoteQr(url);
-            }
-            remoteStatusView.setText(ip == null
-                    ? "没有检测到局域网地址，请确认电视已连接网络"
-                    : "等待浏览器连接…");
-            Log.i(TAG, "remote import opened: " + url);
-        } else {
-            remoteUrlView.setText("启动失败");
-            remoteQrView.setVisibility(View.GONE);
-            remoteStatusView.setText("端口 8080-8089 都被占用，请重试");
-            Log.w(TAG, "remote import server start failed");
-        }
-        if (remoteBackButton != null) {
-            remoteBackButton.post(new Runnable() {
-                @Override
-                public void run() {
-                    remoteBackButton.requestFocus();
-                }
-            });
-        }
     }
 
-    private void closeRemoteImport() {
-        if (!remoteOpen) {
-            return;
-        }
-        remoteOpen = false;
-        if (remoteServer != null) {
-            if (isRemoteKeepRunning()) {
-                // 开着「保持服务运行」：只关页面，HTTP 服务继续跑
-                Log.i(TAG, "remote import closed, server kept on port " + remoteServer.getPort());
-            } else {
-                remoteServer.stop();
-            }
-        }
-        if (remoteModule != null) {
-            remoteModule.setVisibility(View.GONE);
-        }
+    /** 远程页退出全屏：恢复下层焦点，必要时续播为导入让路的视频 */
+    void remotePageExitFullscreen() {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        Log.i(TAG, "remote import closed");
-        if (managerOpen) {
-            if (managerModule != null) {
-                managerModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
-            }
+        if (isManagerOpen()) {
             // 回到管理页只把焦点放回 tab，不定位当前壁纸
-            if (managerType == MANAGER_IMAGES && managerTabImage != null) {
-                managerTabImage.requestFocus();
-            } else if (managerType == MANAGER_VIDEOS && managerTabVideo != null) {
-                managerTabVideo.requestFocus();
-            }
+            wallpaperManager.getView().setDescendantFocusability(
+                    ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+            wallpaperManager.requestTabFocus();
         } else {
             if (desktopModule != null) {
                 desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
@@ -4065,50 +3184,66 @@ public class LauncherActivity extends Activity {
         resetWidgetAutoHide();
     }
 
-    private boolean isRemoteKeepRunning() {
-        return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_REMOTE_KEEP, false);
+    void settingsEnterFullscreen() {
+        hideMenuImmediately();
+        if (desktopModule != null) {
+            desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        }
+        if (menuModule != null) {
+            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        }
     }
 
-    private void setRemoteKeepRunning(boolean keep) {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_REMOTE_KEEP, keep).apply();
-        if (remoteKeepSwitch != null) {
-            remoteKeepSwitch.setChecked(keep);
+    void settingsExitFullscreen() {
+        if (desktopModule != null) {
+            desktopModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
-        if (!keep && !remoteOpen && remoteServer != null) {
-            // 页面已关闭且关掉保持运行：立刻停服
-            remoteServer.stop();
-            Log.i(TAG, "remote import server stopped by keep switch");
+        if (menuModule != null) {
+            menuModule.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
         }
-        Toast.makeText(this,
-                keep ? "已开启：关闭本页后服务继续运行" : "已关闭：离开本页即停止服务",
-                Toast.LENGTH_SHORT).show();
+        focusFirstDockItem();
+        resetWidgetAutoHide();
     }
 
-    /** 取第一个非回环 IPv4，优先 wlan/eth 网卡 */
-    private String localIpv4() {
-        String fallback = null;
-        try {
-            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (!ni.isUp() || ni.isLoopback()) {
-                    continue;
-                }
-                String name = ni.getName() == null ? "" : ni.getName().toLowerCase(Locale.US);
-                for (InetAddress addr : Collections.list(ni.getInetAddresses())) {
-                    if (!(addr instanceof Inet4Address) || addr.isLoopbackAddress()) {
-                        continue;
-                    }
-                    String ip = addr.getHostAddress();
-                    if (name.startsWith("wlan") || name.startsWith("eth")) {
-                        return ip;
-                    }
-                    if (fallback == null) {
-                        fallback = ip;
-                    }
-                }
-            }
-        } catch (Throwable ignored) {
+    /** 桌面控件开关的当前值（供设置页初始化开关状态） */
+    boolean widgetEnabled(String key) {
+        if (KEY_WIDGET_CLOCK.equals(key)) {
+            return widgetClock;
         }
-        return fallback;
+        if (KEY_WIDGET_WEATHER.equals(key)) {
+            return widgetWeather;
+        }
+        if (KEY_WIDGET_DOCK.equals(key)) {
+            return widgetDock;
+        }
+        if (KEY_WIDGET_WALLPAPER_ARROWS.equals(key)) {
+            return widgetArrows;
+        }
+        return widgetDrawer;
+    }
+
+    void setWidgetEnabled(String key, boolean enabled) {
+        if (KEY_WIDGET_CLOCK.equals(key)) {
+            widgetClock = enabled;
+        } else if (KEY_WIDGET_WEATHER.equals(key)) {
+            widgetWeather = enabled;
+        } else if (KEY_WIDGET_DOCK.equals(key)) {
+            widgetDock = enabled;
+        } else if (KEY_WIDGET_WALLPAPER_ARROWS.equals(key)) {
+            widgetArrows = enabled;
+        } else if (KEY_WIDGET_DRAWER.equals(key)) {
+            widgetDrawer = enabled;
+        }
+        setWidgetFlag(key, enabled);
+        applyWidgetVisibility();
+    }
+
+    String widgetModeValue() {
+        return widgetMode;
+    }
+
+    String iconSizePreset() {
+        return iconSizePreset;
     }
 
     // ===== 远程导入宿主接口：仅供 RemoteImportHostBridge 使用 =====
@@ -4149,7 +3284,7 @@ public class LauncherActivity extends Activity {
                 if (wasEmpty) {
                     applyWallpaperByName(saved);
                 }
-                if (!remoteOpen) {
+                if (!isRemoteOpen()) {
                     Toast.makeText(LauncherActivity.this,
                             "已收到壁纸 " + saved, Toast.LENGTH_SHORT).show();
                 }
@@ -4164,7 +3299,7 @@ public class LauncherActivity extends Activity {
             public void run() {
                 reloadVideoBackgrounds();
                 refreshManager();
-                if (!remoteOpen) {
+                if (!isRemoteOpen()) {
                     Toast.makeText(LauncherActivity.this,
                             "已收到动态壁纸 " + saved, Toast.LENGTH_SHORT).show();
                 }
@@ -4176,8 +3311,8 @@ public class LauncherActivity extends Activity {
         handler.post(new Runnable() {
             @Override
             public void run() {
-                if (remoteStatusView != null) {
-                    remoteStatusView.setText(message);
+                if (remotePage != null) {
+                    remotePage.setStatus(message);
                 }
             }
         });
@@ -4191,7 +3326,7 @@ public class LauncherActivity extends Activity {
                 // 页面盖着桌面时视频本来就已经暂停了，不需要再动；
                 // 只有人在桌面、视频正在播时，才为导入让路暂停解码。
                 if (videoTransferCount == 1 && videoWallpaperMode && wallpaperVideo != null
-                        && !managerOpen && !remoteOpen) {
+                        && !isManagerOpen() && !isRemoteOpen()) {
                     try {
                         if (wallpaperVideo.isPlaying()) {
                             wallpaperVideo.pause();
@@ -4219,7 +3354,7 @@ public class LauncherActivity extends Activity {
                     return null;
                 }
                 videoPausedByTransfer = false;
-                if (managerOpen || remoteOpen || !uiForeground) {
+                if (isManagerOpen() || isRemoteOpen() || !uiForeground) {
                     // 传输结束时页面还开着、或桌面不在前台：等回到桌面后再续播
                     videoResumePending = true;
                     Log.i(TAG, "remote transfer done, resume later");
@@ -4265,377 +3400,6 @@ public class LauncherActivity extends Activity {
         return result;
     }
 
-    /** 网格有焦点时才给选中项画白框，避免和底部按钮的焦点框同时出现 */
-    private void updateManagerGridSelection(boolean focused) {
-        if (managerGrid == null) {
-            return;
-        }
-        int selected = managerGrid.getSelectedItemPosition();
-        int first = managerGrid.getFirstVisiblePosition();
-        for (int i = 0; i < managerGrid.getChildCount(); i++) {
-            boolean ring = focused && (first + i) == selected;
-            managerGrid.getChildAt(i).setBackgroundResource(
-                    ring ? R.drawable.manager_item_focus : R.drawable.tile_bg);
-        }
-    }
-
-    private List<BackgroundItem> activeManagerItems() {
-        return managerType == MANAGER_VIDEOS ? videoItems : fourKItems;
-    }
-
-    /**
-     * 当前壁纸在「静态 / 动态」两个分栏里只有一个：
-     * 视频模式时静态栏没有当前项，图片模式时动态栏没有当前项。
-     */
-    private String activeManagerCurrentName() {
-        if (managerType == MANAGER_VIDEOS) {
-            return videoWallpaperMode ? currentVideoName : null;
-        }
-        return videoWallpaperMode ? null : current4KName;
-    }
-
-    private int activeManagerIndex() {
-        if (managerType == MANAGER_VIDEOS) {
-            return videoIndex;
-        }
-        return fourKIndex;
-    }
-
-    /** 当前分栏当前页的壁纸（最多 MANAGER_PAGE_SIZE 个） */
-    private List<BackgroundItem> activeManagerPageItems() {
-        List<BackgroundItem> all = activeManagerItems();
-        int start = managerPage * MANAGER_PAGE_SIZE;
-        if (start >= all.size()) {
-            return Collections.emptyList();
-        }
-        return all.subList(start, Math.min(start + MANAGER_PAGE_SIZE, all.size()));
-    }
-
-    private int managerPageCount() {
-        int total = activeManagerItems().size();
-        return total == 0 ? 1 : (total + MANAGER_PAGE_SIZE - 1) / MANAGER_PAGE_SIZE;
-    }
-
-    /** 把页码夹到合法范围；index >= 0 时切到该壁纸所在的页 */
-    private void ensureManagerPageForIndex(int index) {
-        if (index >= 0) {
-            managerPage = index / MANAGER_PAGE_SIZE;
-        }
-        int pages = managerPageCount();
-        if (managerPage < 0) {
-            managerPage = 0;
-        } else if (managerPage >= pages) {
-            managerPage = pages - 1;
-        }
-    }
-
-    private int managerLocalIndex(int globalIndex) {
-        if (globalIndex < 0) {
-            return 0;
-        }
-        return globalIndex % MANAGER_PAGE_SIZE;
-    }
-
-    /** 让网格按整行对齐，避免顶部只露出上一行的几像素 */
-    /** 壁纸被应用/移动/删除后：网格滚到指定位置，焦点仍留在 tab 行 */
-    private void keepManagerTabFocus(int selection) {
-        if (!managerOpen || managerGrid == null) {
-            return;
-        }
-        List<BackgroundItem> items = activeManagerItems();
-        if (selection >= 0 && selection < items.size()) {
-            ensureManagerPageForIndex(selection);
-            if (managerAdapter != null) {
-                managerAdapter.notifyDataSetChanged();
-            }
-            managerGrid.setSelection(managerLocalIndex(selection));
-            snapManagerGridToRow();
-        }
-        // 操作完回到当前分栏的 tab，而不是某个功能按钮
-        if (managerType == MANAGER_IMAGES && managerTabImage != null) {
-            managerTabImage.requestFocus();
-        } else if (managerType == MANAGER_VIDEOS && managerTabVideo != null) {
-            managerTabVideo.requestFocus();
-        }
-    }
-
-    private void snapManagerGridToRow() {
-        if (managerGrid == null) {
-            return;
-        }
-        managerGrid.post(new Runnable() {
-            @Override
-            public void run() {
-                if (managerGrid == null) {
-                    return;
-                }
-                View firstView = managerGrid.getChildAt(0);
-                if (firstView == null) {
-                    return;
-                }
-                int dy = firstView.getTop() - managerGrid.getPaddingTop();
-                if (dy != 0) {
-                    managerGrid.scrollListBy(dy);
-                }
-            }
-        });
-    }
-
-    /** 焦点进入网格并选中本页第一张（从 tab / 分页条按 ↓ 时用） */
-    private void focusManagerGridTop() {
-        if (managerGrid == null || activeManagerPageItems().isEmpty()) {
-            return;
-        }
-        managerGrid.setSelectionFromTop(0, 0);
-        managerGrid.requestFocus();
-    }
-
-    /** 切换页码并刷新网格；焦点留在底部右侧的分页条上 */
-    private boolean switchManagerPage(int page) {
-        int pages = managerPageCount();
-        if (pages <= 0) {
-            return false;
-        }
-        if (page < 0) {
-            page = 0;
-        } else if (page >= pages) {
-            page = pages - 1;
-        }
-        if (page == managerPage) {
-            return false;
-        }
-        managerPage = page;
-        if (managerAdapter != null) {
-            managerAdapter.notifyDataSetChanged();
-        }
-        updateManagerStats();
-        if (managerGrid == null) {
-            return true;
-        }
-        // 重新挂适配器强制 GridView 丢掉上一页的滚动偏移，否则新页会停在中间某一行
-        managerGrid.setAdapter(null);
-        managerGrid.setAdapter(managerAdapter);
-        managerGrid.setSelectionFromTop(0, 0);
-        // 不主动移动焦点：点击「下一页」后焦点仍留在该按钮上
-        return true;
-    }
-
-    /** 分页条上的上一页 / 下一页 */
-    private void jumpManagerPage(int page) {
-        if (switchManagerPage(page)) {
-            Log.i(TAG, "wallpaper page jumped: page=" + (managerPage + 1));
-        }
-    }
-
-    /** 弹出页码选择：壁纸页数多时直接跳到某一页 */
-    private void showPagePicker() {
-        final int pages = managerPageCount();
-        if (pages <= 1) {
-            return;
-        }
-        final String[] labels = new String[pages];
-        for (int i = 0; i < pages; i++) {
-            labels[i] = "第 " + (i + 1) + " 页" + (i == managerPage ? "（当前）" : "");
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("选择页码")
-                .setItems(labels, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        if (switchManagerPage(which) && managerPageButton != null) {
-                            managerPageButton.requestFocus();
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    /** 同步分页条的文案、可用状态和显隐 */
-    private void updateManagerPager() {
-        if (managerPagerRow == null) {
-            return;
-        }
-        int pages = managerPageCount();
-        boolean show = pages > 1;
-        if (managerPagerRow.getVisibility() != (show ? View.VISIBLE : View.GONE)) {
-            boolean hadFocus = isFocusIn(managerPagerRow);
-            managerPagerRow.setVisibility(show ? View.VISIBLE : View.GONE);
-            if (!show && hadFocus) {
-                if (managerType == MANAGER_IMAGES && managerTabImage != null) {
-                    managerTabImage.requestFocus();
-                } else if (managerTabVideo != null) {
-                    managerTabVideo.requestFocus();
-                }
-            }
-        }
-        if (!show) {
-            return;
-        }
-        if (managerPageButton != null) {
-            managerPageButton.setText("第 " + (managerPage + 1) + " / " + pages + " 页");
-        }
-        if (managerPrevPageButton != null) {
-            // 不设 setEnabled(false)：禁用会让焦点从按钮上掉走，只做置灰
-            managerPrevPageButton.setAlpha(managerPage > 0 ? 1f : 0.4f);
-        }
-        if (managerNextPageButton != null) {
-            managerNextPageButton.setAlpha(managerPage < pages - 1 ? 1f : 0.4f);
-        }
-    }
-
-    private void setManagerType(int type) {
-        if (managerType == type) {
-            return;
-        }
-        managerType = type;
-        managerPage = 0;
-        updateManagerTabs();
-        refreshManager();
-        // 切换分栏只换内容，焦点落在新选中的 tab（下键才进网格）
-        if (managerOpen) {
-            if (type == MANAGER_IMAGES && managerTabImage != null) {
-                managerTabImage.requestFocus();
-            } else if (type == MANAGER_VIDEOS && managerTabVideo != null) {
-                managerTabVideo.requestFocus();
-            }
-        }
-    }
-
-    private void updateManagerTabs() {
-        if (managerCacheButton != null) {
-            managerCacheButton.setVisibility(View.VISIBLE);
-        }
-        if (managerTabImage != null) {
-            managerTabImage.setText("静态壁纸");
-            applyManagerTabVisual(managerTabImage, managerType == MANAGER_IMAGES);
-        }
-        if (managerTabVideo != null) {
-            managerTabVideo.setText("动态壁纸");
-            applyManagerTabVisual(managerTabVideo, managerType == MANAGER_VIDEOS);
-        }
-        if (managerEmpty != null) {
-            managerEmpty.setText(managerType == MANAGER_VIDEOS
-                    ? "还没有动态壁纸\n点下面「导入壁纸」，从 U 盘或本地存储添加"
-                    : "还没有图片壁纸\n点下面「导入壁纸」，从 U 盘或本地存储添加");
-        }
-    }
-
-    /** 选中态用底色，焦点态用焦点框；两者同时存在时焦点框优先，避免切栏后焦点样式被刷掉。 */
-    private void applyManagerTabVisual(TextView tab, boolean selected) {
-        tab.setTextColor(selected ? Color.WHITE : 0xFF8FA0B3);
-        boolean left = tab == managerTabImage;
-        if (tab.hasFocus()) {
-            tab.setBackground(makeManagerTabBackground(0x7AB8D8F2, left));
-        } else {
-            tab.setBackground(makeManagerTabBackground(
-                    selected ? 0xFF1E2A38 : 0xFF141C27, left));
-        }
-    }
-
-    /**
-     * 分段控件单个 tab 的背景：左侧 tab 只圆左上/左下，右侧 tab 只圆右上/右下，
-     * 中间拼缝保持直角；选中和焦点态复用同一套圆角。
-     */
-    private GradientDrawable makeManagerTabBackground(int fillColor, boolean left) {
-        GradientDrawable bg = new GradientDrawable();
-        bg.setShape(GradientDrawable.RECTANGLE);
-        bg.setColor(fillColor);
-        float r = dp(6);
-        bg.setCornerRadii(left
-                ? new float[]{r, r, 0, 0, 0, 0, r, r}
-                : new float[]{0, 0, r, r, r, r, 0, 0});
-        return bg;
-    }
-
-    private TextView makeManagerTab(final String label, final int type) {
-        TextView tab = new TextView(this);
-        tab.setText(label);
-        tab.setTextColor(0xFF8FA0B3);
-        tab.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        tab.setGravity(Gravity.CENTER);
-        tab.setBackground(makeManagerTabBackground(0xFF141C27, type == MANAGER_IMAGES));
-        tab.setFocusable(true);
-        tab.setFocusableInTouchMode(true);
-        tab.setPadding(dp(18), 0, dp(18), 0);
-        tab.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                updateManagerTabs();
-            }
-        });
-        tab.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setManagerType(type);
-            }
-        });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(120), dp(40));
-        tab.setLayoutParams(lp);
-        return tab;
-    }
-
-    private void refreshManager() {
-        updateManagerTabs();
-        // 只把页码夹到合法范围，不因为「当前壁纸」而跳页
-        ensureManagerPageForIndex(-1);
-        if (managerAdapter != null) {
-            managerAdapter.notifyDataSetChanged();
-        }
-        if (managerStats == null) {
-            return;
-        }
-        List<BackgroundItem> items = activeManagerItems();
-        boolean empty = items.isEmpty();
-        if (managerGrid != null) {
-            managerGrid.setVisibility(empty ? View.GONE : View.VISIBLE);
-        }
-        if (managerEmpty != null) {
-            managerEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
-        }
-        // 删到没有壁纸时，焦点从网格移到 tab 行的「导入」按钮
-        if (empty && managerOpen && managerImportButton != null
-                && (managerGrid == null || isFocusIn(managerGrid))) {
-            managerImportButton.requestFocus();
-        }
-        int index = activeManagerIndex();
-        if (!empty && managerOpen && managerGrid != null && isFocusIn(managerGrid)
-                && index >= 0 && index / MANAGER_PAGE_SIZE == managerPage) {
-            managerGrid.setSelection(managerLocalIndex(index));
-            snapManagerGridToRow();
-        }
-        updateManagerStats();
-    }
-
-    private void updateManagerStats() {
-        if (managerStats == null) {
-            updateManagerPager();
-            return;
-        }
-        List<BackgroundItem> items = activeManagerItems();
-        String current = activeManagerCurrentName();
-        StringBuilder sb = new StringBuilder();
-        if (managerType == MANAGER_VIDEOS) {
-            sb.append(items.size()).append(" 个视频 · ").append(formatSize(totalVideoSize()));
-        } else {
-            sb.append(items.size()).append(" 张 · 缓存 ").append(formatSize(totalCacheSize()));
-        }
-        if (!TextUtils.isEmpty(current)) {
-            sb.append("\n当前 ").append(current);
-        }
-        managerStats.setText(sb.toString());
-        updateManagerPager();
-    }
-
-    private long totalVideoSize() {
-        long total = 0;
-        for (BackgroundItem item : videoItems) {
-            File file = new File(item.filePath);
-            total += file.length();
-        }
-        return total;
-    }
-
     /** 背景设置里展示的缓存概况：已生成张数 + 占用体积 */
     private String fourKCacheSummary() {
         File[] files = fourKCacheDir().listFiles();
@@ -4650,7 +3414,7 @@ public class LauncherActivity extends Activity {
                 + " 张，占用 " + formatSize(bytes) + "。";
     }
 
-    private static String formatSize(long bytes) {
+    static String formatSize(long bytes) {
         if (bytes <= 0) {
             return "0 B";
         }
@@ -4658,129 +3422,6 @@ public class LauncherActivity extends Activity {
             return String.format(Locale.US, "%.0f KB", bytes / 1024.0);
         }
         return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
-    }
-
-    private final class WallpaperAdapter extends BaseAdapter {
-
-        /** 壁纸卡片圆角：缩略图、底部文件名浮层和聚焦描边一起裁成圆角 */
-        private final ViewOutlineProvider tileOutline = new ViewOutlineProvider() {
-            @Override
-            public void getOutline(View view, Outline outline) {
-                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), dp(8));
-            }
-        };
-
-        @Override
-        public int getCount() {
-            return activeManagerPageItems().size();
-        }
-
-        @Override
-        public Object getItem(int position) {
-            return activeManagerPageItems().get(position);
-        }
-
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
-
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            List<BackgroundItem> items = activeManagerPageItems();
-            if (position < 0 || position >= items.size()) {
-                return new FrameLayout(LauncherActivity.this);
-            }
-            BackgroundItem item = items.get(position);
-            boolean selected = managerGrid != null && managerGrid.hasFocus()
-                    && managerGrid.getSelectedItemPosition() == position;
-
-            FrameLayout tile = new FrameLayout(LauncherActivity.this);
-            tile.setPadding(dp(3), dp(3), dp(3), dp(3));
-            tile.setClipToOutline(true);
-            tile.setOutlineProvider(tileOutline);
-            tile.setBackgroundResource(selected ? R.drawable.manager_item_focus : R.drawable.tile_bg);
-
-            ImageView image = new ImageView(LauncherActivity.this);
-            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            // 图片自身也按圆角裁切：父容器的 clipToOutline 只裁到了背景描边，
-            // 图片内容仍是直角，这里用背景 Outline + clipToOutline 把位图裁圆。
-            GradientDrawable thumbBg = new GradientDrawable();
-            thumbBg.setColor(0xFF1A2430);
-            thumbBg.setCornerRadius(dp(5));
-            image.setBackground(thumbBg);
-            image.setClipToOutline(true);
-            tile.addView(image, matchParent());
-            loadThumbnail(image, item);
-
-            TextView label = new TextView(LauncherActivity.this);
-            label.setText(item.name);
-            label.setTextColor(Color.WHITE);
-            label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            label.setSingleLine(true);
-            label.setEllipsize(TextUtils.TruncateAt.END);
-            // 底部文件名浮层只圆下面两个角，避免盖住卡片的圆角
-            GradientDrawable labelBg = new GradientDrawable();
-            labelBg.setColor(0xB3000000);
-            float labelRadius = dp(5);
-            labelBg.setCornerRadii(new float[]{
-                    0, 0, 0, 0, labelRadius, labelRadius, labelRadius, labelRadius});
-            label.setBackground(labelBg);
-            label.setPadding(dp(8), dp(3), dp(8), dp(3));
-            FrameLayout.LayoutParams labelLp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(26), Gravity.BOTTOM);
-            tile.addView(label, labelLp);
-
-            // 视频条目叠一个播放标记：4K 视频取不到帧时也能看出这是视频，不是坏图
-            if (WallpaperStore.isVideoName(item.name)) {
-                TextView play = new TextView(LauncherActivity.this);
-                play.setText("\u25B6");
-                play.setTextColor(0xE6FFFFFF);
-                play.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
-                FrameLayout.LayoutParams playLp = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.CENTER);
-                tile.addView(play, playLp);
-            }
-
-            // 内置壁纸单独标识：左上角灰色角标，与右上角蓝色「当前」区分开
-            if (item.builtin) {
-                TextView builtinBadge = new TextView(LauncherActivity.this);
-                builtinBadge.setText("内置");
-                builtinBadge.setTextColor(Color.WHITE);
-                builtinBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-                builtinBadge.setBackgroundColor(0xCC37474F);
-                builtinBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
-                FrameLayout.LayoutParams builtinLp = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.TOP | Gravity.START);
-                builtinLp.topMargin = dp(6);
-                builtinLp.leftMargin = dp(6);
-                tile.addView(builtinBadge, builtinLp);
-            }
-
-            if (item.name.equals(activeManagerCurrentName())) {
-                TextView badge = new TextView(LauncherActivity.this);
-                badge.setText("当前");
-                badge.setTextColor(Color.WHITE);
-                badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-                badge.setBackgroundColor(0xCC1976D2);
-                badge.setPadding(dp(6), dp(1), dp(6), dp(1));
-                FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.TOP | Gravity.END);
-                badgeLp.topMargin = dp(6);
-                badgeLp.rightMargin = dp(6);
-                tile.addView(badge, badgeLp);
-            }
-
-            tile.setLayoutParams(new AbsListView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(100)));
-            return tile;
-        }
     }
 
     // ---------- 缩略图磁盘缓存 ----------
@@ -4879,7 +3520,7 @@ public class LauncherActivity extends Activity {
         }, "thumb-prune").start();
     }
 
-    private void loadThumbnail(final ImageView view, final BackgroundItem item) {
+    void loadThumbnail(final ImageView view, final BackgroundItem item) {
         final String key = item.name + "|" + item.stamp;
         view.setTag(key);
         Bitmap cached = thumbnailCache.get(key);
@@ -5118,66 +3759,6 @@ public class LauncherActivity extends Activity {
         return BitmapFactory.decodeByteArray(data, 0, data.length, options);
     }
 
-    private void showWallpaperActions(final int position) {
-        final List<BackgroundItem> items = activeManagerItems();
-        if (position < 0 || position >= items.size()) {
-            return;
-        }
-        final BackgroundItem item = items.get(position);
-        final boolean video = managerType == MANAGER_VIDEOS;
-        final List<String> labels = new ArrayList<>();
-        final List<Integer> actions = new ArrayList<>();
-
-        boolean isCurrent = item.name.equals(activeManagerCurrentName());
-        labels.add(isCurrent ? "当前壁纸（重新应用）" : "设为当前壁纸");
-        actions.add(1);
-        if (!video) {
-            if (position > 0) {
-                labels.add("向前移动");
-                actions.add(2);
-            }
-            if (position < items.size() - 1) {
-                labels.add("向后移动");
-                actions.add(3);
-            }
-            long cacheSize = cacheSizeFor(item);
-            labels.add(cacheSize > 0 ? "清除此图缓存（" + formatSize(cacheSize) + "）" : "清除此图缓存");
-            actions.add(4);
-        }
-        labels.add(video ? "删除视频" : "删除壁纸");
-        actions.add(5);
-
-        new AlertDialog.Builder(this)
-                .setTitle(item.name)
-                .setItems(labels.toArray(new String[0]), new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        int action = actions.get(which);
-                        if (action == 1) {
-                            if (video) {
-                                applyVideoByName(item.name);
-                            } else {
-                                applyWallpaperByName(item.name);
-                            }
-                        } else if (action == 2) {
-                            moveWallpaper(position, -1);
-                        } else if (action == 3) {
-                            moveWallpaper(position, 1);
-                        } else if (action == 4) {
-                            int cleared = deleteCacheFor(item);
-                            refreshManager();
-                            Toast.makeText(LauncherActivity.this,
-                                    cleared > 0 ? "缓存已清除" : "这张图没有缓存",
-                                    Toast.LENGTH_SHORT).show();
-                        } else if (action == 5) {
-                            confirmDeleteWallpaper(item);
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
     void applyWallpaperByName(String name) {
         int index = -1;
         for (int i = 0; i < fourKItems.size(); i++) {
@@ -5217,7 +3798,7 @@ public class LauncherActivity extends Activity {
         keepManagerTabFocus(index);
     }
 
-    private void moveWallpaper(int position, int delta) {
+    void moveWallpaper(int position, int delta) {
         int target = position + delta;
         if (target < 0 || target >= fourKItems.size()) {
             return;
@@ -5249,7 +3830,7 @@ public class LauncherActivity extends Activity {
                 .putString(KEY_BG_ORDER, sb.toString()).apply();
     }
 
-    private void confirmDeleteWallpaper(final BackgroundItem item) {
+    void confirmDeleteWallpaper(final BackgroundItem item) {
         if (item.builtin) {
             Toast.makeText(this, "内置壁纸不能删除", Toast.LENGTH_SHORT).show();
             return;
@@ -5316,7 +3897,7 @@ public class LauncherActivity extends Activity {
             refresh4KStaticMode();
         }
         refreshManager();
-        if (managerOpen && !fourKItems.isEmpty()) {
+        if (isManagerOpen() && !fourKItems.isEmpty()) {
             keepManagerTabFocus(Math.max(fourKIndex, 0));
         }
         Toast.makeText(this, "已删除 " + item.name, Toast.LENGTH_SHORT).show();
@@ -5360,7 +3941,7 @@ public class LauncherActivity extends Activity {
             }
         }
         refreshManager();
-        if (managerOpen && !videoItems.isEmpty()) {
+        if (isManagerOpen() && !videoItems.isEmpty()) {
             keepManagerTabFocus(Math.max(videoIndex, 0));
         }
         Toast.makeText(this, "已删除 " + item.name, Toast.LENGTH_SHORT).show();
@@ -5378,7 +3959,7 @@ public class LauncherActivity extends Activity {
         return item.name.replaceAll("[^a-zA-Z0-9._-]", "_") + "_";
     }
 
-    private long cacheSizeFor(BackgroundItem item) {
+    long cacheSizeFor(BackgroundItem item) {
         File[] files = fourKCacheDir().listFiles();
         if (files == null) {
             return 0;
@@ -5393,7 +3974,7 @@ public class LauncherActivity extends Activity {
         return total;
     }
 
-    private long totalCacheSize() {
+    long totalCacheSize() {
         File[] files = fourKCacheDir().listFiles();
         if (files == null) {
             return 0;
@@ -5407,7 +3988,7 @@ public class LauncherActivity extends Activity {
         return total;
     }
 
-    private int deleteCacheFor(BackgroundItem item) {
+    int deleteCacheFor(BackgroundItem item) {
         File[] files = fourKCacheDir().listFiles();
         if (files == null) {
             return 0;
@@ -5459,7 +4040,7 @@ public class LauncherActivity extends Activity {
         return deleted;
     }
 
-    private void confirmClearAllCache() {
+    void confirmClearAllCache() {
         final long size = totalCacheSize() + thumbCacheSize();
         if (size <= 0) {
             Toast.makeText(this, "没有缓存", Toast.LENGTH_SHORT).show();
@@ -5484,7 +4065,7 @@ public class LauncherActivity extends Activity {
     // ---------- 壁纸导入 ----------
 
     /** 「导入」按钮：先选导入方式，再走对应的流程。 */
-    private void showImportChooser() {
+    void showImportChooser() {
         final List<File> usbRoots = usbImportRoots();
         final List<String> labels = new ArrayList<>();
         labels.add("从本机导入");
@@ -5740,7 +4321,7 @@ public class LauncherActivity extends Activity {
             Toast.makeText(this, "无法读取该目录", Toast.LENGTH_SHORT).show();
             return;
         }
-        final boolean wantVideo = managerType == MANAGER_VIDEOS;
+        final boolean wantVideo = wallpaperManager.getType() == WallpaperManagerPage.VIDEOS;
         File[] children = dir.listFiles();
         List<File> dirs = new ArrayList<>();
         final List<File> images = new ArrayList<>();
@@ -6648,10 +5229,10 @@ public class LauncherActivity extends Activity {
             }
         }
         // 底栏默认聚焦第一项，左右键用来选择应用
-        if (managerOpen) {
+        if (isManagerOpen()) {
             refreshManager();
             keepManagerTabFocus(-1);
-        } else if (!settingsOpen) {
+        } else if (!isSettingsOpen()) {
             // 兜底：从抽屉里开过应用后，桌面层可能还停在隐藏状态
             if (!drawerOpen && homeLayer != null
                     && homeLayer.getVisibility() != View.VISIBLE) {
@@ -6672,16 +5253,16 @@ public class LauncherActivity extends Activity {
         boolean homePressed = intent != null
                 && Intent.ACTION_MAIN.equals(intent.getAction())
                 && intent.hasCategory(Intent.CATEGORY_HOME);
-        boolean homeOnDesktop = homePressed && !remoteOpen && !managerOpen && !settingsOpen
+        boolean homeOnDesktop = homePressed && !isRemoteOpen() && !isManagerOpen() && !isSettingsOpen()
                 && !menuOpen && !drawerOpen;
         if (homePressed) {
-            if (remoteOpen) {
+            if (isRemoteOpen()) {
                 closeRemoteImport();
             }
-            if (managerOpen) {
+            if (isManagerOpen()) {
                 closeWallpaperManager();
             }
-            if (settingsOpen) {
+            if (isSettingsOpen()) {
                 closeDesktopSettings();
             }
         }
@@ -6690,7 +5271,7 @@ public class LauncherActivity extends Activity {
         reload4KBackgrounds();
         reloadVideoBackgrounds();
         reloadAppsAsync();
-        if (!managerOpen && homeLayer != null
+        if (!isManagerOpen() && homeLayer != null
                 && homeLayer.getVisibility() != View.VISIBLE) {
             showHomeLayer(0);
         }
@@ -6708,7 +5289,7 @@ public class LauncherActivity extends Activity {
         handleDebugWallpaperIntent(intent);
         if (intent != null && intent.getBooleanExtra("wallpaper_manager", false)) {
             if ("video".equals(intent.getStringExtra("manager_tab"))) {
-                setManagerType(MANAGER_VIDEOS);
+                setManagerType(WallpaperManagerPage.VIDEOS);
             }
             openWallpaperManager();
             if (intent.getBooleanExtra("remote_import", false)) {
@@ -6844,9 +5425,8 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (remoteServer != null) {
-            remoteServer.stop();
-            remoteServer = null;
+        if (remotePage != null) {
+            remotePage.shutdown();
         }
         stopVideoWallpaper();
         stop4KStatic();
@@ -6898,15 +5478,15 @@ public class LauncherActivity extends Activity {
         // 有的机型会把 HOME 直接派发给当前 Activity
         if (keyCode == KeyEvent.KEYCODE_HOME) {
             // 已经在桌面（没有任何浮层/抽屉/菜单）时，HOME 只做取消选中
-            boolean onDesktop = !remoteOpen && !managerOpen && !settingsOpen
+            boolean onDesktop = !isRemoteOpen() && !isManagerOpen() && !isSettingsOpen()
                     && !menuOpen && !drawerOpen;
-            if (remoteOpen) {
+            if (isRemoteOpen()) {
                 closeRemoteImport();
             }
-            if (managerOpen) {
+            if (isManagerOpen()) {
                 closeWallpaperManager();
             }
-            if (settingsOpen) {
+            if (isSettingsOpen()) {
                 closeDesktopSettings();
             }
             if (onDesktop) {
@@ -6914,7 +5494,7 @@ public class LauncherActivity extends Activity {
             }
             return true;
         }
-        if (managerOpen || settingsOpen) {
+        if (isManagerOpen() || isSettingsOpen()) {
             return super.onKeyDown(keyCode, event);
         }
         if (!drawerOpen && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
@@ -6926,15 +5506,15 @@ public class LauncherActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (remoteOpen) {
+        if (isRemoteOpen()) {
             closeRemoteImport();
             return;
         }
-        if (managerOpen) {
+        if (isManagerOpen()) {
             closeWallpaperManager();
             return;
         }
-        if (settingsOpen) {
+        if (isSettingsOpen()) {
             closeDesktopSettings();
             return;
         }
@@ -7095,7 +5675,7 @@ public class LauncherActivity extends Activity {
         return -1;
     }
 
-    private boolean isFocusIn(View parent) {
+    boolean isFocusIn(View parent) {
         View current = getCurrentFocus();
         while (current != null) {
             if (current == parent) {
@@ -7110,7 +5690,7 @@ public class LauncherActivity extends Activity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         // 管理页/设置页打开时只处理页面内的焦点导航，不再触发桌面菜单/抽屉
-        if (managerOpen || settingsOpen) {
+        if (isManagerOpen() || isSettingsOpen()) {
             return super.dispatchKeyEvent(event);
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
@@ -7588,7 +6168,7 @@ public class LauncherActivity extends Activity {
 
     /** 当前没有任何浮层/抽屉，才算桌面空闲 */
     private boolean onDesktopIdle() {
-        return !remoteOpen && !managerOpen && !settingsOpen && !menuOpen && !drawerOpen;
+        return !isRemoteOpen() && !isManagerOpen() && !isSettingsOpen() && !menuOpen && !drawerOpen;
     }
 
     private final Runnable widgetAutoHideTick = new Runnable() {
@@ -7626,7 +6206,7 @@ public class LauncherActivity extends Activity {
         handler.postDelayed(widgetAutoHideTick, WIDGET_AUTO_HIDE_MS);
     }
 
-    private void setWidgetMode(String mode) {
+    void setWidgetMode(String mode) {
         if (mode == null) {
             return;
         }
@@ -7636,7 +6216,6 @@ public class LauncherActivity extends Activity {
         widgetAutoHidden = false;
         handler.removeCallbacks(widgetAutoHideTick);
         applyWidgetVisibility();
-        updateWidgetModeOptions();
         resetWidgetAutoHide();
         Log.i(TAG, "widget mode: " + mode);
     }
