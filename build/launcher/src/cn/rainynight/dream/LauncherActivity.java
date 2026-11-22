@@ -27,9 +27,6 @@ import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
-import android.media.MediaCodec;
-import android.media.MediaFormat;
-import android.media.MediaMuxer;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
@@ -64,11 +61,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.VideoView;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -133,7 +127,6 @@ public class LauncherActivity extends Activity {
     private static final String KEY_VIDEO_MUTED = "video_muted";
     /** 远程导入：关闭页面后是否继续保持 HTTP 服务；默认关闭 */
     private static final String KEY_REMOTE_KEEP = "remote_keep_running";
-    private static final int[] SLIDESHOW_STEPS = {10, 30, 60, 300, 600, 1800};
     /** UI 壁纸相对视频 plane 的 1px 对齐微调 */
     static final float WALLPAPER_NUDGE_X = 1f;
     static final float WALLPAPER_NUDGE_Y = 1f;
@@ -687,6 +680,10 @@ public class LauncherActivity extends Activity {
         return reveal4KVideo && x264Available && !fourKItems.isEmpty();
     }
 
+    boolean reveal4KVideo() {
+        return reveal4KVideo;
+    }
+
     /** 后台清理：图片已删除或已变更后遗留的 4K 缓存 */
     private void cleanup4KCacheAsync() {
         if (cacheCleanupStarted) {
@@ -878,7 +875,7 @@ public class LauncherActivity extends Activity {
         revealStartupFromBlack();
     }
 
-    private void set4KStaticEnabled(boolean enabled) {
+    void set4KStaticEnabled(boolean enabled) {
         leaveVideoWallpaperMode();
         if (reveal4KVideo == enabled) {
             refresh4KStaticMode();
@@ -1057,124 +1054,7 @@ public class LauncherActivity extends Activity {
         return imageLoader.decode4KBitmap(item, targetW, targetH);
     }
 
-    static byte[] bitmapToI420(Bitmap bitmap, int width, int height) {
-        byte[] yuv = new byte[width * height * 3 / 2];
-        int[] row = new int[width];
-        int uOff = width * height;
-        int vOff = uOff + (width / 2) * (height / 2);
-        int uvRowSize = width / 2;
-        for (int y = 0; y < height; y++) {
-            bitmap.getPixels(row, 0, width, 0, y, width, 1);
-            int uvRow = (y / 2) * uvRowSize;
-            for (int x = 0; x < width; x++) {
-                int c = row[x];
-                int r = (c >> 16) & 0xFF;
-                int g = (c >> 8) & 0xFF;
-                int b = c & 0xFF;
-                // BT.709 limited range，与 4K 视频的 sRGB/BT.709 显示保持一致
-                int yv = ((47 * r + 157 * g + 16 * b + 128) >> 8) + 16;
-                yuv[y * width + x] = (byte) clampByte(yv);
-                if ((y & 1) == 0 && (x & 1) == 0) {
-                    int u = ((-26 * r - 87 * g + 112 * b + 128) >> 8) + 128;
-                    int v = ((112 * r - 102 * g - 10 * b + 128) >> 8) + 128;
-                    int uvIndex = uvRow + x / 2;
-                    yuv[uOff + uvIndex] = (byte) clampByte(u);
-                    yuv[vOff + uvIndex] = (byte) clampByte(v);
-                }
-            }
-        }
-        return yuv;
-    }
-
-    private static int clampByte(int value) {
-        if (value < 0) return 0;
-        if (value > 255) return 255;
-        return value;
-    }
-
-    static void write4KMp4(File file, byte[] data, int width, int height) throws IOException {
-        ByteBuffer bb = ByteBuffer.wrap(data);
-        int spsLen = bb.getInt();
-        byte[] sps = new byte[spsLen];
-        bb.get(sps);
-        int ppsLen = bb.getInt();
-        byte[] pps = new byte[ppsLen];
-        bb.get(pps);
-        int frameCount = bb.getInt();
-        List<byte[]> frames = new ArrayList<>();
-        for (int i = 0; i < frameCount; i++) {
-            int len = bb.getInt();
-            byte[] frame = new byte[len];
-            bb.get(frame);
-            frames.add(frame);
-        }
-
-        MediaFormat format = MediaFormat.createVideoFormat("video/avc", width, height);
-        // 帧率必须够高：解码器/显示 plane 在切换尺寸后，第一帧可能按旧缩放/旧色彩展示，
-        // 只有 1fps 时这张错帧会停留近 1 秒；30fps 下第二帧 33ms 后就覆盖掉它
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
-        format.setByteBuffer("csd-0", withStartCode(sps));
-        format.setByteBuffer("csd-1", withStartCode(pps));
-
-        file.getParentFile().mkdirs();
-        if (file.exists()) {
-            file.delete();
-        }
-        MediaMuxer muxer = new MediaMuxer(file.getAbsolutePath(),
-                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-        boolean started = false;
-        try {
-            int track = muxer.addTrack(format);
-            muxer.start();
-            started = true;
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            for (int i = 0; i < frames.size(); i++) {
-                byte[] annexB = toAnnexB(frames.get(i));
-                ByteBuffer buf = ByteBuffer.wrap(annexB);
-                info.set(0, annexB.length, i * 33_333L,
-                        MediaCodec.BUFFER_FLAG_KEY_FRAME);
-                muxer.writeSampleData(track, buf, info);
-            }
-        } finally {
-            if (started) {
-                muxer.stop();
-            }
-            muxer.release();
-        }
-    }
-
-    private static ByteBuffer withStartCode(byte[] nal) {
-        ByteBuffer b = ByteBuffer.allocate(nal.length + 4);
-        b.put(new byte[]{0, 0, 0, 1});
-        b.put(nal);
-        b.position(0);
-        return b;
-    }
-
-    private static byte[] toAnnexB(byte[] avcc) {
-        ByteBuffer in = ByteBuffer.wrap(avcc);
-        ByteArrayOutputStream out = new ByteArrayOutputStream(avcc.length + 32);
-        while (in.remaining() >= 4) {
-            int len = in.getInt();
-            if (len <= 0 || len > in.remaining()) {
-                return avcc;
-            }
-            out.write(0);
-            out.write(0);
-            out.write(0);
-            out.write(1);
-            byte[] nal = new byte[len];
-            in.get(nal);
-            try {
-                out.write(nal);
-            } catch (IOException e) {
-                return avcc;
-            }
-        }
-        return out.toByteArray();
-    }
-
-    private void loadPlaybackSettings() {
+    void loadPlaybackSettings() {
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
         slideshow.setEnabled(sp.getBoolean(KEY_SLIDESHOW, false));
         slideshow.setIntervalSec(sp.getInt(KEY_SLIDESHOW_SEC, 30));
@@ -1183,7 +1063,7 @@ public class LauncherActivity extends Activity {
         videoPlayer.setMuted(sp.getBoolean(KEY_VIDEO_MUTED, true));
     }
 
-    private void savePlaybackSettings() {
+    void savePlaybackSettings() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putBoolean(KEY_SLIDESHOW, slideshow.isEnabled())
                 .putInt(KEY_SLIDESHOW_SEC, slideshow.getIntervalSec())
@@ -1191,46 +1071,6 @@ public class LauncherActivity extends Activity {
                 .putBoolean(KEY_SLIDESHOW_RANDOM, slideshow.isRandom())
                 .putBoolean(KEY_VIDEO_MUTED, videoPlayer.isMuted())
                 .apply();
-    }
-
-    private String intervalLabel(int seconds) {
-        if (seconds < 60) {
-            return seconds + " 秒";
-        }
-        return (seconds / 60) + " 分钟";
-    }
-
-    /** 「◀ 值 ▶」：左右箭头位置固定，值在中间居中；返回中间的值控件用于刷新 */
-    private TextView addStepperValue(LinearLayout parent) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.HORIZONTAL);
-        box.setGravity(Gravity.CENTER);
-
-        int arrowColor = 0xFF7FB2E5;
-        TextView left = new TextView(this);
-        left.setText("◀");
-        left.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        left.setTextColor(arrowColor);
-
-        TextView value = new TextView(this);
-        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        value.setTextColor(Color.WHITE);
-        value.setGravity(Gravity.CENTER);
-
-        TextView right = new TextView(this);
-        right.setText("▶");
-        right.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        right.setTextColor(arrowColor);
-
-        box.addView(left, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        box.addView(value, new LinearLayout.LayoutParams(
-                dp(96), ViewGroup.LayoutParams.WRAP_CONTENT));
-        box.addView(right, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        parent.addView(box, new LinearLayout.LayoutParams(
-                dp(136), ViewGroup.LayoutParams.WRAP_CONTENT));
-        return value;
     }
 
     /** 设置项整行：左侧文字、右侧开关；焦点落在整行上，聚焦时整行高亮 */
@@ -1282,208 +1122,7 @@ public class LauncherActivity extends Activity {
     }
 
     void showBackgroundSettings() {
-        loadPlaybackSettings();
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(30), dp(18), dp(30), dp(6));
-
-        LinearLayout row4k = makeSettingsRow("4K 静态壁纸", reveal4KVideo,
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                        set4KStaticEnabled(isChecked);
-                    }
-                });
-        box.addView(row4k, settingsRowLp());
-
-        LinearLayout rowSlide = makeSettingsRow("幻灯片播放", slideshow.isEnabled(),
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                        slideshow.setEnabled(isChecked);
-                        savePlaybackSettings();
-                        resetBgTimer();
-                        Log.i(TAG, "slideshow = " + isChecked);
-                    }
-                });
-        box.addView(rowSlide, settingsRowLp());
-
-        // 切换间隔：左侧名称、右侧「◀ 值 ▶」（箭头位置固定，只更新中间的值）
-        LinearLayout rowInterval = new LinearLayout(this);
-        rowInterval.setOrientation(LinearLayout.HORIZONTAL);
-        rowInterval.setGravity(Gravity.CENTER_VERTICAL);
-        rowInterval.setFocusable(true);
-        rowInterval.setFocusableInTouchMode(true);
-        rowInterval.setPadding(dp(14), dp(8), dp(14), dp(8));
-
-        TextView intervalTitle = new TextView(this);
-        intervalTitle.setText("切换间隔");
-        intervalTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        intervalTitle.setTextColor(Color.WHITE);
-        rowInterval.addView(intervalTitle, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        final TextView intervalValue = addStepperValue(rowInterval);
-        final Runnable refreshInterval = new Runnable() {
-            @Override
-            public void run() {
-                intervalValue.setText(intervalLabel(slideshow.getIntervalSec()));
-            }
-        };
-        refreshInterval.run();
-
-        rowInterval.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
-            }
-        });
-        rowInterval.setOnKeyListener(new View.OnKeyListener() {
-            @Override
-            public boolean onKey(View v, int keyCode, KeyEvent event) {
-                if (event.getAction() != KeyEvent.ACTION_DOWN) {
-                    return false;
-                }
-                int delta = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1
-                        : keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 0;
-                if (delta == 0) {
-                    return false;
-                }
-                stepSlideshowInterval(delta);
-                refreshInterval.run();
-                return true;
-            }
-        });
-        rowInterval.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                stepSlideshowInterval(1);
-                refreshInterval.run();
-            }
-        });
-        box.addView(rowInterval, settingsRowLp());
-
-        // 播放顺序：左侧名称、右侧「◀ 顺序/随机 ▶」
-        LinearLayout rowOrder = new LinearLayout(this);
-        rowOrder.setOrientation(LinearLayout.HORIZONTAL);
-        rowOrder.setGravity(Gravity.CENTER_VERTICAL);
-        rowOrder.setFocusable(true);
-        rowOrder.setFocusableInTouchMode(true);
-        rowOrder.setPadding(dp(14), dp(8), dp(14), dp(8));
-
-        TextView orderTitle = new TextView(this);
-        orderTitle.setText("播放顺序");
-        orderTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        orderTitle.setTextColor(Color.WHITE);
-        rowOrder.addView(orderTitle, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        final TextView orderValue = addStepperValue(rowOrder);
-        final Runnable refreshOrder = new Runnable() {
-            @Override
-            public void run() {
-                orderValue.setText(slideshow.isRandom() ? "随机" : "顺序");
-            }
-        };
-        refreshOrder.run();
-
-        rowOrder.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackgroundResource(hasFocus ? R.drawable.dock_focus : 0);
-            }
-        });
-        rowOrder.setOnKeyListener(new View.OnKeyListener() {
-            @Override
-            public boolean onKey(View v, int keyCode, KeyEvent event) {
-                if (event.getAction() != KeyEvent.ACTION_DOWN) {
-                    return false;
-                }
-                if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT
-                        && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
-                    return false;
-                }
-                slideshow.setRandom(!slideshow.isRandom());
-                savePlaybackSettings();
-                refreshOrder.run();
-                return true;
-            }
-        });
-        rowOrder.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                slideshow.setRandom(!slideshow.isRandom());
-                savePlaybackSettings();
-                refreshOrder.run();
-            }
-        });
-        box.addView(rowOrder, settingsRowLp());
-
-        LinearLayout rowFade = makeSettingsRow("切换特效", slideshow.isFade(),
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                        slideshow.setFade(isChecked);
-                        savePlaybackSettings();
-                        Log.i(TAG, "slideshow fade = " + isChecked);
-                    }
-                });
-        box.addView(rowFade, settingsRowLp());
-
-        LinearLayout rowMute = makeSettingsRow("动态壁纸静音", videoPlayer.isMuted(),
-                new android.widget.CompoundButton.OnCheckedChangeListener() {
-                    @Override
-                    public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
-                        videoPlayer.setMuted(isChecked);
-                        savePlaybackSettings();
-                    }
-                });
-        box.addView(rowMute, settingsRowLp());
-
-
-        TextView hint4k = new TextView(this);
-        hint4k.setText("4K 静态壁纸：将 4K 图片编码为 3 帧短视频，利用硬件视频层播放，比直接渲染更清晰。");
-        hint4k.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        hint4k.setTextColor(0xFF9FB0C2);
-        hint4k.setLineSpacing(dp(2), 1f);
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.topMargin = dp(10);
-        box.addView(hint4k, dlp);
-
-        TextView hintCache = new TextView(this);
-        hintCache.setText(fourKCacheSummary()
-                + "\n图片保存在 /sdcard/VIDAA桌面壁纸/静态、视频在 /动态，卸载应用不会删除；"
-                + "4K 缓存位于应用内部存储，卸载或清空数据后会自动重建。");
-        hintCache.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        hintCache.setTextColor(0xFF9FB0C2);
-        hintCache.setLineSpacing(dp(2), 1f);
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        clp.topMargin = dp(6);
-        box.addView(hintCache, clp);
-
-        new AlertDialog.Builder(this)
-                .setTitle("背景设置")
-                .setView(box)
-                .setPositiveButton("完成", null)
-                .show();
-    }
-
-    private void stepSlideshowInterval(int delta) {
-        int index = 0;
-        for (int i = 0; i < SLIDESHOW_STEPS.length; i++) {
-            if (SLIDESHOW_STEPS[i] == slideshow.getIntervalSec()) {
-                index = i;
-                break;
-            }
-        }
-        index = (index + delta + SLIDESHOW_STEPS.length) % SLIDESHOW_STEPS.length;
-        slideshow.setIntervalSec(SLIDESHOW_STEPS[index]);
-        savePlaybackSettings();
-        resetBgTimer();
-        Log.i(TAG, "slideshow interval = " + slideshow.getIntervalSec() + "s");
+        new BackgroundSettingsPage(this, slideshow, videoPlayer).show();
     }
 
     void switchWallpaperBy(int direction) {
@@ -2029,7 +1668,7 @@ public class LauncherActivity extends Activity {
     }
 
     /** 背景设置里展示的缓存概况：已生成张数 + 占用体积 */
-    private String fourKCacheSummary() {
+    String fourKCacheSummary() {
         return "4K 缓存：已生成 " + caches.fourKCacheFileCount() + " / " + fourKItems.size()
                 + " 张，占用 " + WallpaperCaches.formatSize(caches.totalFourKCacheSize()) + "。";
     }
@@ -2334,7 +1973,7 @@ public class LauncherActivity extends Activity {
         slideshow.preloadNext();
     }
 
-    private void resetBgTimer() {
+    void resetBgTimer() {
         slideshow.resetTimer();
     }
 

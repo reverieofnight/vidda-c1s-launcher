@@ -230,7 +230,7 @@ final class FourKStaticPlayer {
                     }
                     Log.i(TAG, "4K encode target " + target[0] + "x" + target[1]
                             + " for " + item.name);
-                    byte[] yuv = activity.bitmapToI420(source, target[0], target[1]);
+                    byte[] yuv = FourKEncoder.bitmapToI420(source, target[0], target[1]);
                     source.recycle();
                     source = null;
                     byte[] data = LauncherActivity.encodeI4204K(
@@ -238,7 +238,7 @@ final class FourKStaticPlayer {
                     if (data == null) {
                         throw new IOException("x264 returned null");
                     }
-                    activity.write4KMp4(cache, data, target[0], target[1]);
+                    FourKEncoder.writeMp4(cache, data, target[0], target[1]);
                     activity.runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
@@ -400,12 +400,12 @@ final class FourKStaticPlayer {
                     if (target != null) {
                         Bitmap source = activity.decode4KBitmap(item, target[0], target[1]);
                         if (source != null) {
-                            byte[] yuv = activity.bitmapToI420(source, target[0], target[1]);
+                            byte[] yuv = FourKEncoder.bitmapToI420(source, target[0], target[1]);
                             source.recycle();
                             byte[] data = LauncherActivity.encodeI4204K(
                                     yuv, target[0], target[1], LauncherActivity.FOUR_K_ENCODE_FRAMES);
                             if (data != null) {
-                                activity.write4KMp4(cache, data, target[0], target[1]);
+                                FourKEncoder.writeMp4(cache, data, target[0], target[1]);
                                 ok = true;
                             }
                         }
