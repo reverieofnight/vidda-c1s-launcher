@@ -1061,6 +1061,10 @@ public class LauncherActivity extends Activity {
         slideshow.setFade(sp.getBoolean(KEY_SLIDESHOW_FADE, true));
         slideshow.setRandom(sp.getBoolean(KEY_SLIDESHOW_RANDOM, false));
         videoPlayer.setMuted(sp.getBoolean(KEY_VIDEO_MUTED, true));
+        Log.i(TAG, "playback settings: slideshow=" + slideshow.isEnabled()
+                + " interval=" + slideshow.getIntervalSec() + "s"
+                + " fade=" + slideshow.isFade() + " random=" + slideshow.isRandom()
+                + " videoMuted=" + videoPlayer.isMuted());
     }
 
     void savePlaybackSettings() {

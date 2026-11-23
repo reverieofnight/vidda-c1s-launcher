@@ -101,6 +101,13 @@ final class VideoWallpaperPlayer {
             } catch (Throwable t) {
                 Log.w(TAG, "video stall check failed: " + t);
             }
+            // 静音自愈：个别设备在开机恢复/循环播放时会把播放器音量重置成 1.0
+            if (muted && playerRef != null) {
+                try {
+                    playerRef.setVolume(0f, 0f);
+                } catch (Throwable ignored) {
+                }
+            }
             activity.uiHandler().postDelayed(this, 5000);
         }
     };
@@ -111,13 +118,21 @@ final class VideoWallpaperPlayer {
 
     void setMuted(boolean value) {
         muted = value;
-        if (playerRef != null) {
-            float volume = muted ? 0f : 1f;
-            try {
-                playerRef.setVolume(volume, volume);
-            } catch (Throwable t) {
-                Log.w(TAG, "apply video volume failed: " + t);
-            }
+        Log.i(TAG, "setMuted " + value + " player=" + (playerRef != null));
+        applyVolume(playerRef);
+    }
+
+    /** 有些设备在 start() 后才会接受音量，统一在这里应用并记录 */
+    private void applyVolume(MediaPlayer mp) {
+        if (mp == null) {
+            return;
+        }
+        float volume = muted ? 0f : 1f;
+        try {
+            mp.setVolume(volume, volume);
+            Log.i(TAG, "video volume applied: muted=" + muted + " volume=" + volume);
+        } catch (Throwable t) {
+            Log.w(TAG, "apply video volume failed: " + t);
         }
     }
 
@@ -227,8 +242,7 @@ final class VideoWallpaperPlayer {
                 }
                 mp.setLooping(true);
                 playerRef = mp;
-                float volume = muted ? 0f : 1f;
-                mp.setVolume(volume, volume);
+                applyVolume(mp);
                 // 先保留 bgFront/bgBack（显示上一张壁纸），等首帧真正渲染出来再隐藏，
                 // 避免 prepare 期间整屏黑掉。视频→视频切换时 bgFront 里是旧静态图，不能再露出来。
                 if (!frameCover && activity.bgFrontView().getDrawable() != null) {
@@ -239,6 +253,15 @@ final class VideoWallpaperPlayer {
                 }
                 video.setVisibility(View.VISIBLE);
                 video.start();
+                // 部分设备的 MediaPlayer 在 start 时会重置音量，启动后再补一次
+                activity.uiHandler().postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (token == playToken) {
+                            applyVolume(playerRef);
+                        }
+                    }
+                }, 300);
                 // 看门狗：3 秒内没有收到首帧就重建一次，避免停在黑屏不再恢复
                 activity.uiHandler().postDelayed(new Runnable() {
                     @Override
@@ -268,6 +291,8 @@ final class VideoWallpaperPlayer {
             public boolean onInfo(MediaPlayer mp, int what, int extra) {
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                     Log.i(TAG, "video wallpaper rendering start");
+                    // 部分设备在首帧上屏时会把音量恢复成 1.0，这里再压一次
+                    applyVolume(mp);
                     lastFrameAt = System.currentTimeMillis();
                     ready = true;
                     retryCount = 0;
@@ -455,6 +480,7 @@ final class VideoWallpaperPlayer {
         }
         try {
             video.start();
+            applyVolume(playerRef);
             ready = true;
             activity.uiHandler().removeCallbacks(healthTick);
             activity.uiHandler().postDelayed(healthTick, 5000);
@@ -499,6 +525,7 @@ final class VideoWallpaperPlayer {
                 if (!video.isPlaying()) {
                     video.start();
                 }
+                applyVolume(playerRef);
                 ready = true;
                 resumePending = false;
                 activity.uiHandler().removeCallbacks(healthTick);
@@ -541,6 +568,7 @@ final class VideoWallpaperPlayer {
                 resumePending = false;
                 try {
                     video.start();
+                    applyVolume(playerRef);
                     ready = true;
                     activity.uiHandler().removeCallbacks(healthTick);
                     activity.uiHandler().postDelayed(healthTick, 5000);
